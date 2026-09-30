@@ -19,6 +19,7 @@ env/
 *.ipynb_checkpoints
 
 # Données brutes (trop lourdes pour git)
+*.csv
 data/raw/*.csv
 data/raw/*.zip
 
