@@ -368,7 +368,7 @@ def evaluate(reco_fn, test_df, train_df, k: int = 10, sample: int = 500, seed: i
         try:
             reco = reco_fn(user, k + len(already_seen))
             reco = [i for i in reco if i not in already_seen][:k]
-        except Exception:
+        except Exception:  # noqa: BLE001, S112
             continue
         precisions.append(precision_at_k(reco, relevant, k))
         recalls.append(recall_at_k(reco, relevant, k))
@@ -472,12 +472,12 @@ def main():
     popular_items = pop_counts.index.tolist()
 
     # ── SVD ──────────────────────────────────────────────────────────────────
-    R_pred, user_mean, R_centered = train_svd(
+    R_pred, _user_mean, _R_centered = train_svd(
         train_rand, u_enc, i_enc, k_factors=args.k_factors
     )
 
     # ── ALS ──────────────────────────────────────────────────────────────────
-    als_model, _, seen_items = train_als(
+    als_model, _, _seen_items = train_als(
         train_loo, u_enc, i_enc,
         n_factors=args.als_factors,
         regularization=args.als_reg,
@@ -487,7 +487,7 @@ def main():
 
     # ── Content-Based ─────────────────────────────────────────────────────────
     valid_items = df["item_id"].unique()
-    cosine_sim, item_to_idx, idx_to_item, products_full = build_content_features(
+    cosine_sim, item_to_idx, idx_to_item, _products_full = build_content_features(
         data, valid_items
     )
 
@@ -512,7 +512,7 @@ def main():
         "python_version":  "3.13+",
         "n_users":         int(df["user_idx"].max()) + 1,
         "n_items":         int(df["item_idx"].max()) + 1,
-        "n_interactions":  int(len(df)),
+        "n_interactions":  len(df),
         "model":           "Hybrid (SVD + Content-Based)",
         "hyperparameters": {
             "svd_k_factors": args.k_factors,

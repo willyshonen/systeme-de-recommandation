@@ -5,14 +5,11 @@ Tests unitaires de l'API FastAPI avec des modèles factices.
 
 import json
 import pickle
-from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from sklearn.preprocessing import LabelEncoder
-
 
 # ── Stub ALS au niveau module (picklable) ─────────────────────────────────────
 
