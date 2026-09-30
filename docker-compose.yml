@@ -1,0 +1,34 @@
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mel-recommender-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Monte les modèles depuis le host → permet de mettre à jour sans rebuild
+      - ./models:/app/models:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Service optionnel : ré-entraînement du modèle
+  trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile.train
+    container_name: mel-recommender-trainer
+    volumes:
+      - ./data:/app/data:ro
+      - ./models:/app/models
+    profiles:
+      - train    # activé uniquement avec : docker compose --profile train up trainer

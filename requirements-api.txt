@@ -1,0 +1,9 @@
+# Dépendances de l'API — compatibles Python 3.13 et 3.14
+# Note : pydantic-core nécessite un wheel précompilé.
+# Sur Python 3.14, utiliser la version déjà disponible via pip.
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9.0
+numpy>=2.0.0
+scipy>=1.14.0
+scikit-learn>=1.5.0

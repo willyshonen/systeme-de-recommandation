@@ -1,0 +1,23 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+CMD ["python", "src/train.py", \
+     "--data-dir", "data/raw", \
+     "--models-dir", "models", \
+     "--k-factors", "150", \
+     "--als-factors", "32", \
+     "--als-reg", "0.1", \
+     "--alpha", "1.0"]

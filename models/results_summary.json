@@ -1,0 +1,39 @@
+{
+  "dataset": "Olist Brazilian E-Commerce",
+  "python_version": "3.13+",
+  "n_users": 3599,
+  "n_items": 882,
+  "n_interactions": 9657,
+  "K": 10,
+  "best_svd_k_factors": 150,
+  "best_als_n_factors": 32,
+  "best_als_reg": 0.1,
+  "best_hybrid_alpha": 1.0,
+  "results": {
+    "Baseline (Popularit\u00e9)": {
+      "Precision@10": 0.0015,
+      "Recall@10": 0.0147,
+      "NDCG@10": 0.0077
+    },
+    "SVD (scipy)": {
+      "Precision@10": 0.0032,
+      "Recall@10": 0.032,
+      "NDCG@10": 0.024
+    },
+    "ALS (from scratch)": {
+      "Precision@10": 0.0038,
+      "Recall@10": 0.038,
+      "NDCG@10": 0.0298
+    },
+    "Content-Based (TF-IDF)": {
+      "Precision@10": 0.0012,
+      "Recall@10": 0.012,
+      "NDCG@10": 0.0054
+    },
+    "Hybride (SVD + CB)": {
+      "Precision@10": 0.0038,
+      "Recall@10": 0.038,
+      "NDCG@10": 0.0325
+    }
+  }
+}
