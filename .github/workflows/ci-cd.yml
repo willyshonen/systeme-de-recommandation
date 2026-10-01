@@ -75,6 +75,9 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest
 
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       # Les modèles (.pkl, .npy) sont dans .gitignore → on build sans eux
       # En production ils sont montés comme volume Docker
       - name: Build & Push (sans modèles)
