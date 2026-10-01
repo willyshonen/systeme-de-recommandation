@@ -108,7 +108,7 @@ jobs:
           python-version: "3.13"
 
       - name: Installer dépendances API
-        run: pip install -r requirements-api.txt httpx
+        run: pip install -r requirements-api.txt tqdm httpx
 
       - name: Générer des modèles factices
         run: python scripts/generate_fake_models.py
