@@ -272,7 +272,6 @@ def _top_categories(user_id: str, model: str = "hybrid", n_cats: int = 20) -> li
 
     # Hybrid : SVD + Content-Based
     # Pour récupérer les catégories de l'user, on reconstruit depuis item_enc
-    n_total = len(store.item_enc.classes_)
     # On utilise les scores SVD élevés comme proxy des catégories connues de l'user
     known_cats = store.item_enc.inverse_transform(
         np.argsort(store.R_pred[user_idx])[::-1][:10]
@@ -477,7 +476,7 @@ def reload_models(
 
     try:
         store.load()
-    except Exception as e:
+    except (OSError, pickle.UnpicklingError, ValueError, RuntimeError) as e:
         log.error("Erreur au rechargement : %s", e)
         raise HTTPException(status_code=500, detail=f"Erreur rechargement : {e}")
 
