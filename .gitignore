@@ -21,9 +21,8 @@ env/
 # Données brutes (trop lourdes pour git)
 *.csv
 *.sql
-data/raw/*.csv
-data/raw/*.sql
-data/raw/*.zip
+data/raw/
+data/processed/
 
 # Modèles entraînés (trop lourds pour git)
 models/*.npy
