@@ -90,6 +90,7 @@ def load_data(data_dir: Path) -> dict:
         "products":    products,
         "reviews":     reviews,
         "cat_names":   cat_names,
+        "data_dir":    str(data_dir),
     }
 
 
@@ -98,25 +99,105 @@ def load_data(data_dir: Path) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_interactions(data: dict) -> pd.DataFrame:
-    """Construit le dataframe d'interactions user-item avec ratings."""
+    """
+    Construit le dataframe d'interactions implicites par CATÉGORIE.
+
+    Sur une marketplace d'occasion chaque article est unique et disparaît
+    après vente → on ne recommande pas des articles spécifiques mais des
+    catégories, puis on retourne les articles disponibles dans ces catégories.
+
+    Stratégie de scoring :
+        vue        → score 1  (intérêt faible)
+        panier     → score 3  (intérêt fort)
+        achat      → score 5  (conversion)
+
+    Le score final par (user, catégorie) est le MAX des signaux observés.
+    """
+    products    = data["products"]
     orders      = data["orders"]
     order_items = data["order_items"]
-    reviews     = data["reviews"]
+    data_dir    = Path(data.get("data_dir", "data/raw"))
 
-    interactions = (
-        order_items
-        .merge(orders[["order_id", "customer_id", "order_status"]], on="order_id")
-        .query("order_status == 'delivered'")
+    # Table de correspondance article → catégorie
+    if "product_category_name" not in products.columns:
+        log.error("products.csv manque la colonne 'product_category_name'")
+        return pd.DataFrame(columns=["user_id", "item_id", "rating", "order_id"])
+
+    prod_cat = (
+        products[["product_id", "product_category_name"]]
+        .dropna()
+        .drop_duplicates("product_id")
+        .set_index("product_id")["product_category_name"]
+        .to_dict()
     )
-    df = interactions.merge(
-        reviews[["order_id", "review_score"]].drop_duplicates("order_id"),
-        on="order_id",
-        how="left",
+
+    rows = []
+
+    # ── Signal 1 : vues (shetabit_visits) ────────────────────────────────────
+    visits_path = data_dir / "visits.csv"
+    if visits_path.exists():
+        visits = pd.read_csv(visits_path)
+        visits["customer_id"] = pd.to_numeric(visits["customer_id"], errors="coerce")
+        visits["product_id"]  = pd.to_numeric(visits["product_id"],  errors="coerce")
+        visits = visits.dropna(subset=["customer_id", "product_id"])
+        visits["category"] = visits["product_id"].map(prod_cat)
+        visits = visits.dropna(subset=["category"])
+        v = (visits.groupby(["customer_id", "category"])
+                   .size()
+                   .reset_index(name="n_views"))
+        v["rating"] = (v["n_views"].clip(upper=5) / 5).round(2)  # 0.2 à 1.0
+        v = v[["customer_id", "category", "rating"]]
+        v.columns = ["user_id", "item_id", "rating"]
+        rows.append(v)
+        log.info("Signal vues (catégories) : %d interactions", len(v))
+
+    # ── Signal 2 : paniers ────────────────────────────────────────────────────
+    panier_path = data_dir / "panier_interactions.csv"
+    if panier_path.exists():
+        paniers = pd.read_csv(panier_path)
+        paniers["customer_id"] = pd.to_numeric(paniers["customer_id"], errors="coerce")
+        paniers["product_id"]  = pd.to_numeric(paniers["product_id"],  errors="coerce")
+        paniers = paniers.dropna(subset=["customer_id", "product_id"])
+        paniers["category"] = paniers["product_id"].map(prod_cat)
+        paniers = paniers.dropna(subset=["category"])
+        p = paniers[["customer_id", "category"]].drop_duplicates()
+        p.columns = ["user_id", "item_id"]
+        p["rating"] = 3.0
+        rows.append(p)
+        log.info("Signal paniers (catégories) : %d interactions", len(p))
+
+    # ── Signal 3 : achats (factures valides) ─────────────────────────────────
+    valid_statuses = {"valide", "delivered", "completed"}
+    orders_valid = orders[orders["order_status"].str.lower().isin(valid_statuses)]
+    if len(orders_valid) == 0:
+        orders_valid = orders  # fallback
+    purchases = order_items.merge(
+        orders_valid[["order_id", "customer_id"]], on="order_id"
     )
-    df["review_score"] = df["review_score"].fillna(3.0)
-    df = df[["customer_id", "product_id", "review_score", "order_id"]].copy()
-    df.columns = ["user_id", "item_id", "rating", "order_id"]
-    log.info("Interactions brutes : %d", len(df))
+    if not purchases.empty:
+        purchases["category"] = purchases["product_id"].map(prod_cat)
+        purchases = purchases.dropna(subset=["category"])
+        purchases = purchases[["customer_id", "category"]].drop_duplicates()
+        purchases.columns = ["user_id", "item_id"]
+        purchases["rating"] = 5.0
+        rows.append(purchases)
+        log.info("Signal achats (catégories) : %d interactions", len(purchases))
+
+    if not rows:
+        log.error("Aucun signal d'interaction trouvé !")
+        return pd.DataFrame(columns=["user_id", "item_id", "rating", "order_id"])
+
+    # ── Fusion : garde le score max par (user, catégorie) ─────────────────────
+    df = pd.concat(rows, ignore_index=True)
+    df = df.groupby(["user_id", "item_id"])["rating"].max().reset_index()
+
+    # order_id factice pour compatibilité avec make_splits
+    df["order_id"] = range(len(df))
+
+    log.info(
+        "Interactions catégories : %d (users: %d, catégories: %d)",
+        len(df), df["user_id"].nunique(), df["item_id"].nunique(),
+    )
     return df
 
 
@@ -126,7 +207,19 @@ def filter_interactions(
     min_item: int = 5,
     n_iter: int = 3,
 ) -> pd.DataFrame:
-    """Filtrage itératif cold-start."""
+    """Filtrage itératif cold-start. Adapte les seuils si le dataset est petit."""
+    n = len(df)
+
+    # Adapte les seuils au volume de données
+    if n < 100:
+        min_user = 1
+        min_item = 1
+        log.warning("Petit dataset (%d interactions) — seuils cold-start désactivés (min_user=1, min_item=1).", n)
+    elif n < 500:
+        min_user = max(1, min_user - 1)
+        min_item = max(1, min_item - 3)
+        log.warning("Dataset limité (%d interactions) — seuils réduits (min_user=%d, min_item=%d).", n, min_user, min_item)
+
     for i in range(n_iter):
         before = len(df)
         valid_users = df.groupby("user_id")["item_id"].count()
@@ -155,12 +248,20 @@ def make_splits(df: pd.DataFrame, orders: pd.DataFrame, random_state: int = 42):
     """
     from sklearn.model_selection import train_test_split
 
-    orders_date = orders[["order_id", "order_purchase_timestamp"]].copy()
-    orders_date["order_purchase_timestamp"] = pd.to_datetime(
-        orders_date["order_purchase_timestamp"]
-    )
-    df_dated = df.merge(orders_date, on="order_id", how="left")
-    df_dated  = df_dated.sort_values(["user_id", "order_purchase_timestamp"])
+    # Supporte 'order_purchase_timestamp' (format e-commerce) et 'created_at' (MEL)
+    date_col = None
+    for col in ["order_purchase_timestamp", "created_at", "updated_at"]:
+        if col in orders.columns:
+            date_col = col
+            break
+
+    if date_col:
+        orders_date = orders[["order_id", date_col]].copy()
+        orders_date[date_col] = pd.to_datetime(orders_date[date_col], errors="coerce")
+        df_dated = df.merge(orders_date, on="order_id", how="left")
+        df_dated = df_dated.sort_values(["user_id", date_col])
+    else:
+        df_dated = df.copy()
 
     test_mask = df_dated.groupby("user_id").cumcount(ascending=False) == 0
     train_loo = df_dated[~test_mask].copy()
@@ -200,7 +301,11 @@ def train_svd(train_random: pd.DataFrame, user_enc, item_enc, k_factors: int = 1
     R_centered[R_dense == 0] = 0
 
     log.info("Entraînement SVD avec k=%d facteurs...", k_factors)
-    U, sigma, Vt = svds(csr_matrix(R_centered), k=k_factors)
+    # k doit être < min(n_users, n_items) — on cap pour les petits datasets
+    k_safe = min(k_factors, min(R_centered.shape) - 1)
+    if k_safe != k_factors:
+        log.warning("k_factors réduit de %d à %d (taille matrice %s)", k_factors, k_safe, R_centered.shape)
+    U, sigma, Vt = svds(csr_matrix(R_centered), k=k_safe)
     R_pred = np.dot(np.dot(U, np.diag(sigma)), Vt) + user_mean[:, np.newaxis]
     log.info("SVD terminé — matrice prédite : %s", R_pred.shape)
     return R_pred, user_mean, R_centered
@@ -303,28 +408,69 @@ def train_als(train_loo: pd.DataFrame, user_enc, item_enc,
 
 
 def build_content_features(data: dict, valid_items):
-    """Construit la matrice de similarité cosine TF-IDF."""
+    """
+    Construit la matrice de similarité cosine TF-IDF par CATÉGORIE.
+
+    Sur une marketplace d'occasion on travaille au niveau catégorie.
+    Les features textuelles combinent :
+      - le nom de la catégorie (le signal le plus discriminant)
+      - les noms des articles de cette catégorie (si disponibles)
+
+    valid_items contient les CATÉGORIES présentes dans les interactions.
+    """
     products  = data["products"]
     cat_names = data["cat_names"]
 
+    # Enrichissement avec les noms anglais si disponibles
     products_full = products.merge(cat_names, on="product_category_name", how="left")
-    products_full["description"] = (
-        products_full["product_category_name_english"].fillna("unknown") + " "
-        + products_full["product_weight_g"].fillna(0).astype(str) + "g "
-        + products_full["product_photos_qty"].fillna(0).astype(str) + "photos"
-    )
-    products_cb = (
-        products_full[products_full["product_id"].isin(valid_items)]
-        .drop_duplicates("product_id")
-        .reset_index(drop=True)
-    )
-    tfidf       = TfidfVectorizer(max_features=500, stop_words="english")
-    tfidf_mat   = tfidf.fit_transform(products_cb["description"])
-    cosine_sim  = cosine_similarity(tfidf_mat, tfidf_mat)
-    item_to_idx = {pid: idx for idx, pid in enumerate(products_cb["product_id"])}
-    idx_to_item = {idx: pid for pid, idx in item_to_idx.items()}
 
-    log.info("Content-Based — %d produits, matrice %s", len(products_cb), cosine_sim.shape)
+    # Agrégation par catégorie : concatène les noms des articles pour enrichir le TF-IDF
+    # valid_items = liste des catégories vues dans les interactions
+    categories_cb = pd.DataFrame({"category": list(valid_items)})
+
+    # Noms des articles disponibles par catégorie (pour enrichir le TF-IDF)
+    if "product_name" in products_full.columns:
+        cat_article_names = (
+            products_full[products_full["available"].fillna(1) == 1]  # articles dispo seulement
+            .groupby("product_category_name")["product_name"]
+            .apply(lambda names: " ".join(n for n in names if isinstance(n, str) and n.strip()))
+            .reset_index()
+        )
+        cat_article_names.columns = ["category", "articles_text"]
+        categories_cb = categories_cb.merge(cat_article_names, on="category", how="left")
+        categories_cb["articles_text"] = categories_cb["articles_text"].fillna("")
+    else:
+        categories_cb["articles_text"] = ""
+
+    # Nom anglais de la catégorie
+    cat_en_map = (
+        cat_names.set_index("product_category_name")["product_category_name_english"]
+        .to_dict()
+        if not cat_names.empty and "product_category_name" in cat_names.columns
+        else {}
+    )
+    categories_cb["category_en"] = categories_cb["category"].map(cat_en_map).fillna(
+        categories_cb["category"]
+    )
+
+    # Description finale = nom_catégorie + nom_anglais + noms_articles
+    categories_cb["description"] = (
+        categories_cb["category"] + " "
+        + categories_cb["category_en"] + " "
+        + categories_cb["articles_text"]
+    ).str.strip()
+
+    tfidf      = TfidfVectorizer(max_features=500, stop_words="english")
+    tfidf_mat  = tfidf.fit_transform(categories_cb["description"])
+    cosine_sim = cosine_similarity(tfidf_mat, tfidf_mat)
+
+    item_to_idx = {cat: idx for idx, cat in enumerate(categories_cb["category"])}
+    idx_to_item = {idx: cat for cat, idx in item_to_idx.items()}
+
+    log.info(
+        "Content-Based (catégories) — %d catégories, matrice %s",
+        len(categories_cb), cosine_sim.shape,
+    )
     return cosine_sim, item_to_idx, idx_to_item, products_full
 
 
@@ -437,6 +583,7 @@ def save_artifacts(
     item_to_idx, idx_to_item,
     user_enc, item_enc, popular_items,
     summary: dict,
+    products_df: pd.DataFrame | None = None,
 ):
     """Sauvegarde tous les artefacts nécessaires à l'API."""
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -461,6 +608,12 @@ def save_artifacts(
     with open(models_dir / "popular_items.pkl", "wb") as f:
         pickle.dump(popular_items, f)
     log.info("Sauvegardé : popular_items.pkl")
+
+    # Table produits complète avec colonnes available et product_name
+    # Utilisée par l'API pour retrouver les articles disponibles dans une catégorie
+    if products_df is not None:
+        products_df.to_csv(models_dir / "products_catalog.csv", index=False)
+        log.info("Sauvegardé : products_catalog.csv (%d lignes)", len(products_df))
 
     with open(models_dir / "results_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
@@ -621,6 +774,7 @@ def main():
             item_to_idx, idx_to_item,
             u_enc, i_enc, popular_items,
             summary,
+            products_df=_products_full,
         )
 
         # Logger les artefacts dans MLflow

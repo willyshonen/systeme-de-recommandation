@@ -1,66 +1,54 @@
-# 🛒 Système de Recommandation E-commerce — MEL Cameroun
+# 🛒 Système de Recommandation — MEL Cameroun
 
-Projet ML de recommandation de produits pour la plateforme [melcameroun.com](https://melcameroun.com).  
+Système de recommandation de produits pour la marketplace d'occasion [melcameroun.com](https://melcameroun.com).  
 Expose les recommandations via une **API REST FastAPI** dans une **pipeline MLOps complète**.
+
+> **Particularité :** chaque article est unique (vendu = retiré). Le modèle recommande des **catégories**, l'API retourne les **articles disponibles** dans ces catégories en temps réel.
 
 ---
 
 ## 📋 Table des matières
 
 - [Aperçu](#aperçu)
-- [Données](#données)
 - [Architecture](#architecture)
 - [Modèles implémentés](#modèles-implémentés)
-- [Résultats](#résultats)
+- [Données](#données)
 - [Installation](#installation)
 - [Utilisation](#utilisation)
 - [API FastAPI](#api-fastapi)
 - [Pipeline MLOps](#pipeline-mlops)
 - [Docker](#docker)
+- [Automatisation](#automatisation)
 - [CI/CD](#cicd)
+- [Tests](#tests)
 - [Structure du projet](#structure-du-projet)
 - [Prochaines étapes](#prochaines-étapes)
+- [Stack technique](#stack-technique)
 
 ---
 
 ## Aperçu
 
-Ce projet implémente et compare **5 modèles de recommandation** de produits, puis les expose via une **API REST** dans une **pipeline MLOps complète** :
+Ce projet implémente un **système de recommandation adapté à une marketplace d'occasion** :
+
+| Contrainte | Solution |
+|---|---|
+| Chaque article est unique | Collaborative filtering sur les **catégories**, pas les articles |
+| Un article vendu disparaît | Colonne `available` dans le catalogue, filtre dynamique à chaque requête |
+| Nouveaux utilisateurs | Cold-start automatique → articles populaires disponibles |
+| Re-entraînement sans downtime | Endpoint `POST /reload` + cron hebdomadaire Docker |
+
+**5 modèles comparés :**
 
 | Modèle | Approche |
 |---|---|
-| Baseline | Popularité globale |
-| SVD | Collaborative Filtering (décomposition matricielle) |
-| ALS | Collaborative Filtering implicite (Alternating Least Squares) |
-| Content-Based | TF-IDF + similarité cosine sur les attributs produit |
-| **Hybride** | SVD + Content-Based pondérés (meilleur alpha automatique) |
+| Baseline | Popularité des catégories |
+| SVD | Collaborative Filtering (décomposition matricielle user × catégorie) |
+| ALS | Collaborative Filtering implicite (from scratch, numpy/scipy) |
+| Content-Based | TF-IDF + similarité cosine entre catégories |
+| **Hybride** | SVD + Content-Based pondérés (α = 0.6) |
 
-> ✅ **100% compatible Python 3.13+** — aucune dépendance Cython
-
----
-
-## Données
-
-Le pipeline utilise les données de la plateforme MEL Cameroun, exportées depuis la base MySQL (`factures`, `articles`, `paniers`, `categories`).
-
-**Fichiers CSV attendus dans `data/raw/` :**
-
-| Fichier | Description |
-|---|---|
-| `orders.csv` | Commandes (order_id, customer_id, order_status) |
-| `order_items.csv` | Produits par commande (order_id, product_id, price) |
-| `products.csv` | Catalogue produits (product_id, category, weight, photos) |
-| `reviews.csv` | Avis clients (order_id, review_score 1-5) |
-| `category_names.csv` | Traduction catégories (optionnel) |
-
-**Après filtrage cold-start (validation sur données de référence) :**
-
-| Métrique | Valeur |
-|---|---|
-| Utilisateurs | 3 599 |
-| Produits | 882 |
-| Interactions | 9 657 |
-| Sparsité | ~99.7% |
+> ✅ **100% compatible Python 3.14+** — aucune dépendance Cython
 
 ---
 
@@ -69,162 +57,183 @@ Le pipeline utilise les données de la plateforme MEL Cameroun, exportées depui
 ```
 mel-ml/
 ├── data/
-│   ├── raw/                        # Données source (CSV exportés depuis MySQL MEL)
-│   └── processed/                  # Données nettoyées, splits train/test
+│   ├── raw/                          # CSV exportés depuis MySQL MEL
+│   └── processed/                    # Splits train/test
 ├── notebooks/
-│   └── recommendation_system.ipynb # Notebook principal (14 sections)
+│   └── recommendation_system.ipynb   # Notebook principal (14 sections)
 ├── src/
-│   ├── recommender.py              # Classe ALSRecommender (partagée)
-│   └── train.py                    # Pipeline d'entraînement CLI
+│   ├── recommender.py                # Classe ALSRecommender (partagée)
+│   └── train.py                      # Pipeline d'entraînement CLI
 ├── api/
-│   └── main.py                     # API FastAPI (5 endpoints)
-├── models/                         # Modèles entraînés (.pkl, .npy)
-│   ├── svd_R_pred.npy
+│   └── main.py                       # API FastAPI (6 endpoints)
+├── models/                           # Artefacts entraînés
+│   ├── svd_R_pred.npy                # Matrice user × catégorie
 │   ├── als_model.pkl
-│   ├── cosine_sim.pkl
+│   ├── cosine_sim.pkl                # Similarité entre catégories
 │   ├── user_encoder.pkl
-│   ├── item_encoder.pkl
+│   ├── item_encoder.pkl              # Encode les noms de catégories
 │   ├── popular_items.pkl
+│   ├── products_catalog.csv          # Catalogue avec colonne available
 │   └── results_summary.json
-├── tests/
-│   └── test_api.py                 # 15 tests unitaires
 ├── scripts/
-│   └── generate_fake_models.py     # Génère de faux modèles pour CI
+│   ├── sql_to_csv.py                 # Parse dump MySQL → CSV
+│   ├── mysql_export.py               # Export direct MySQL → CSV (production)
+│   ├── retrain.sh                    # Pipeline retrain automatique
+│   ├── generate_fake_models.py       # Modèles factices pour CI
+│   └── docker-entrypoint-scheduler.sh
+├── tests/
+│   └── test_api.py                   # 32 tests unitaires
 ├── docs/
 │   ├── technical_documentation.md
 │   └── quickstart.md
 ├── .github/workflows/
-│   └── ci-cd.yml                   # GitHub Actions
-├── Dockerfile                      # Image API
-├── Dockerfile.train                # Image entraînement
+│   └── ci-cd.yml                     # GitHub Actions
+├── .env.example                      # Template de configuration
+├── Dockerfile                        # Image API
+├── Dockerfile.train                  # Image entraînement
+├── Dockerfile.scheduler              # Image scheduler (cron)
 ├── docker-compose.yml
-├── requirements.txt                # Dépendances notebook + train
-└── requirements-api.txt            # Dépendances API (image légère)
+└── requirements.txt
 ```
 
 ---
 
 ## Modèles implémentés
 
+### Logique commune — marketplace d'occasion
+
+Sur MEL Cameroun, chaque article est vendu une seule fois. Recommander un article spécifique n'a pas de sens : il peut déjà être vendu à l'instant où l'utilisateur voit la recommandation.
+
+**Solution :** le modèle apprend des préférences par **catégorie** (vêtements femmes, chaussures hommes, etc.). L'API traduit ensuite ces catégories en articles **actuellement disponibles**.
+
+```
+Modèle → [Catégorie A, Catégorie B, ...]
+API    → articles disponibles dans Catégorie A + Catégorie B + ...
+```
+
+### Signaux d'interaction utilisés
+
+| Signal | Source SQL | Score |
+|---|---|---|
+| Vue d'article | `shetabit_visits` | 0.2 – 1.0 |
+| Ajout au panier | `paniers` | 3.0 |
+| Achat (facture valide) | `factures` | 5.0 |
+
 ### 1. Baseline — Popularité
-Recommande les produits les plus achetés globalement.
-Sert de référence minimale et de fallback cold-start pour les nouveaux utilisateurs.
+Recommande les catégories les plus interagies globalement.
+Fallback cold-start pour les nouveaux utilisateurs.
 
 ### 2. SVD — Singular Value Decomposition
-- Matrice user-item centrée par user (rating moyen soustrait)
+- Matrice user × catégorie centrée par utilisateur
 - Décomposition SVD tronquée via `scipy.sparse.linalg.svds`
-- Tuning du nombre de facteurs latents : **k = 150** (optimal)
+- Tuning du nombre de facteurs latents : **k = 150**
 
 ### 3. ALS — Alternating Least Squares
 - Implémentation from scratch dans `src/recommender.py` (numpy/scipy uniquement)
-- Signal implicite : confidence `c_ui = 1 + 40 × n_achats`
+- Signal implicite : confidence `c_ui = 1 + 40 × score`
 - Résolution par système linéaire `(YᵀCᵘY + λI) xᵤ = YᵀCᵘpᵤ`
-- Tuning : **n_factors = 32, regularization = 0.1** (optimal)
+- Tuning : **n_factors = 32, regularization = 0.1**
 
 ### 4. Content-Based — TF-IDF + Cosine
-- Features textuelles : catégorie produit + poids + nombre de photos
+- Features : nom de la catégorie + noms des articles disponibles dans la catégorie
 - Vectorisation TF-IDF (500 features max)
-- Similarité cosine entre produits
-- Recommande les produits similaires aux achats passés de l'utilisateur
+- Similarité cosine entre catégories
+- Recommande les catégories similaires à celles déjà achetées/visitées
 
 ### 5. Hybride — SVD + Content-Based
-- Normalisation [0, 1] des scores SVD et CB par user
-- Score final : `α × score_SVD + (1−α) × score_CB`
-- Grid search sur α ∈ {0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0}
-- **Meilleur alpha = 1.0** (SVD domine — features CB à enrichir)
+- Score final : `0.6 × score_SVD + 0.4 × score_CB`
+- Meilleur compromis entre filtrage collaboratif et similarité de contenu
 
 ---
 
-## Résultats
+## Données
 
-Évaluation sur un échantillon de **500 utilisateurs** avec la stratégie **Leave-One-Out** (dernier achat en test).
+Le pipeline utilise les données de MEL Cameroun exportées depuis MySQL.
 
-| Modèle | Precision@10 | Recall@10 | NDCG@10 |
-|---|---|---|---|
-| Baseline (Popularité) | 0.0015 | 0.0147 | 0.0077 |
-| SVD (scipy) | 0.0032 | 0.0320 | 0.0240 |
-| ALS (from scratch) | 0.0038 | 0.0380 | 0.0298 |
-| Content-Based (TF-IDF) | 0.0012 | 0.0120 | 0.0054 |
-| **Hybride (SVD + CB)** | **0.0038** | **0.0380** | **0.0325** |
+**Tables source :**
 
-> **Note :** Les scores absolus sont faibles car la matrice est très sparse (~99.7%). Ce qui compte : l'ALS et le modèle hybride surpassent la baseline de **+4× en NDCG**.
+| Table MySQL | Rôle |
+|---|---|
+| `factures` | Commandes → `orders.csv` + `order_items.csv` |
+| `articles` | Catalogue produits → `products.csv` (avec `available`) |
+| `article_categories` + `categories` | Catégories → `products.csv` + `category_names.csv` |
+| `paniers` | Ajouts au panier → `panier_interactions.csv` |
+| `etoiles` | Avis clients → `reviews.csv` |
+| `shetabit_visits` | Visites d'articles → `visits.csv` |
+
+**Colonnes clés de `products.csv` :**
+
+| Colonne | Description |
+|---|---|
+| `product_id` | Identifiant de l'article |
+| `product_name` | Nom de l'article |
+| `product_category_name` | Catégorie (en français) |
+| `available` | **1 = disponible, 0 = vendu** |
 
 ---
 
 ## Installation
 
 ### Prérequis
-- Python 3.13+
+- Python 3.14+
 - pip
+- Docker (pour le déploiement)
 
 ### 1. Cloner le projet
 
 ```bash
-git clone https://github.com/ton-username/mel-ml.git
-cd mel-ml
+git clone https://github.com/willyshonen/systeme-de-recommandation.git
+cd systeme-de-recommandation
 ```
 
 ### 2. Installer les dépendances
 
 ```bash
-# Pour le notebook et l'entraînement
 pip install -r requirements.txt
-
-# Pour l'API uniquement (plus léger)
-pip install -r requirements-api.txt
 ```
 
-### 3. Préparer les données
+### 3. Configurer l'environnement
 
-Exporter les données de la base MySQL MEL dans `data/raw/` :
-
-```sql
--- Exemple : exporter les commandes
-SELECT f.id AS order_id, f.acheteur_id AS customer_id, f.status AS order_status,
-       f.created_at AS order_purchase_timestamp
-FROM factures f
-INTO OUTFILE '/path/to/data/raw/orders.csv' FIELDS TERMINATED BY ',' LINES TERMINATED BY '\n';
+```bash
+cp .env.example .env
+# Éditer .env avec les paramètres de votre environnement
 ```
 
-Voir `docs/quickstart.md` pour le guide complet d'export.
+### 4. Préparer les données
+
+**Option A — depuis un dump SQL :**
+```bash
+# Placer le dump dans data/raw/mysql-mel.sql puis :
+python scripts/sql_to_csv.py --sql data/raw/mysql-mel.sql --out data/raw
+```
+
+**Option B — connexion directe MySQL (production) :**
+```bash
+python scripts/mysql_export.py \
+  --host     db.melcameroun.com \
+  --database mel_cameroun \
+  --user     mel_readonly \
+  --password secret \
+  --out      data/raw
+```
 
 ---
 
 ## Utilisation
 
-### Notebook (exploration + entraînement interactif)
-
-```bash
-jupyter notebook notebooks/recommendation_system.ipynb
-```
-
-Exécuter les cellules dans l'ordre. Les modèles sont sauvegardés dans `models/`.
-
-> ⚠️ Le notebook importe `ALSRecommender` depuis `src.recommender` — ne pas redéfinir la classe dans le notebook.
-
-### Script d'entraînement (reproductible)
-
-```bash
-python src/train.py
-```
-
-Avec options :
+### Entraîner le modèle
 
 ```bash
 python src/train.py \
-  --data-dir data/raw \
+  --data-dir   data/raw \
   --models-dir models \
-  --k-factors 150 \
+  --k-factors  150 \
   --als-factors 32 \
-  --als-reg 0.1 \
-  --alpha 1.0
+  --als-reg    0.1 \
+  --alpha      1.0
 ```
 
----
-
-## API FastAPI
-
-### Démarrage
+### Lancer l'API
 
 ```bash
 python -m uvicorn api.main:app --reload --port 8000
@@ -232,33 +241,43 @@ python -m uvicorn api.main:app --reload --port 8000
 
 → Documentation interactive : http://127.0.0.1:8000/docs
 
+---
+
+## API FastAPI
+
 ### Endpoints
 
 | Méthode | Endpoint | Description |
 |---|---|---|
-| GET | `/health` | Statut de l'API + infos modèle |
+| GET | `/health` | Statut + nb users, catégories, articles disponibles |
 | GET | `/metrics` | Métriques NDCG/Precision/Recall |
-| GET | `/popular?n=10` | Produits les plus populaires |
-| GET | `/recommend/{user_id}?n=10&model=hybrid` | Recommandations personnalisées |
-| GET | `/similar/{product_id}?n=10` | Produits similaires |
+| GET | `/popular?n=10` | Articles disponibles les plus populaires |
+| GET | `/popular?category=X` | Articles disponibles dans une catégorie |
+| GET | `/recommend/{user_id}?n=10&model=hybrid` | Articles disponibles recommandés |
+| GET | `/similar/{product_id}?n=10` | Articles disponibles dans des catégories similaires |
+| POST | `/reload?secret=XXX` | Rechargement zero-downtime des modèles |
 
 ### Exemples
 
 ```bash
-# Santé de l'API
+# Statut de l'API
 curl http://localhost:8000/health
+# {"status":"ok","model":"Hybrid","n_users":34,"n_categories":7,"n_available_products":148}
 
-# Top 10 recommandations pour un user
-curl "http://localhost:8000/recommend/USER_ID?n=10"
+# Recommandations pour un utilisateur connu
+curl "http://localhost:8000/recommend/42?n=10&model=hybrid"
+# {"user_id":"42","model":"hybrid","recommended_categories":["Vêtements femmes",...],"recommendations":["12","47","83",...],"n":10}
 
-# Choisir le modèle : svd | als | hybrid
-curl "http://localhost:8000/recommend/USER_ID?model=als"
-
-# Produits similaires
-curl "http://localhost:8000/similar/PRODUCT_ID?n=5"
-
-# Nouveau client → cold-start automatique (popularité)
+# Utilisateur inconnu → cold-start automatique
 curl "http://localhost:8000/recommend/nouveau_client"
+# {"model":"popularity (cold-start)", ...}
+
+# Articles dans des catégories similaires
+curl "http://localhost:8000/similar/47?n=5"
+# {"product_id":"47","product_category":"Chaussures femmes","similar_categories":[...],"similar_products":["23","61",...],"n":5}
+
+# Articles populaires disponibles dans une catégorie
+curl "http://localhost:8000/popular?category=Vêtements+femmes&n=10"
 ```
 
 ---
@@ -266,72 +285,150 @@ curl "http://localhost:8000/recommend/nouveau_client"
 ## Pipeline MLOps
 
 ```
-data/raw/ ──► src/train.py ──► models/ ──► api/main.py ──► HTTP
-                  │                              │
-                  ▼                              ▼
-          results_summary.json           /metrics endpoint
+MySQL MEL
+   │
+   ▼ sql_to_csv.py ou mysql_export.py
+data/raw/ (CSV avec colonne available)
+   │
+   ▼ src/train.py
+models/ (SVD, ALS, Content-Based, products_catalog.csv)
+   │
+   ▼ api/main.py
+API :8000
+   │
+   ├─ GET /recommend/{user_id}  → articles disponibles dans catégories recommandées
+   ├─ GET /similar/{product_id} → articles dans catégories similaires
+   └─ GET /popular              → articles les plus populaires disponibles
 ```
 
-### Re-entraîner et redéployer
+### Re-entraîner manuellement
 
 ```bash
-# 1. Entraîner
 python src/train.py
-
-# 2. Lancer l'API (recharge les modèles au démarrage)
-python -m uvicorn api.main:app --reload
-```
-
-### Tests
-
-```bash
-pytest tests/ -v
-# 15/15 tests passent
+# Puis recharger l'API sans downtime :
+curl -X POST "http://localhost:8000/reload?secret=votre-secret"
 ```
 
 ---
 
 ## Docker
 
-### Lancer l'API avec Docker
+### Démarrage complet
 
 ```bash
-# Build + démarrage
-docker compose up --build
+# Copier et configurer l'environnement
+cp .env.example .env
 
-# API disponible sur http://localhost:8000
+# Démarrage : API + MLflow + Scheduler
+docker compose up --build -d
+
+# API        → http://localhost:8000
+# MLflow UI  → http://localhost:5000
+# Scheduler  → retrain automatique chaque dimanche 2h
 ```
 
-### Re-entraîner dans Docker
+### Commandes utiles
 
 ```bash
+# Retrain ponctuel manuel
 docker compose --profile train up trainer
+
+# Voir les logs du scheduler
+docker logs mel-scheduler -f
+
+# Recharger l'API après retrain manuel
+curl -X POST "http://localhost:8000/reload?secret=$(grep RELOAD_SECRET .env | cut -d= -f2)"
+
+# Statut des containers
+docker compose ps
 ```
 
 ### Variables d'environnement
 
+Voir `.env.example` pour la liste complète. Variables clés :
+
 | Variable | Défaut | Description |
 |---|---|---|
-| `MODELS_DIR` | `models/` | Chemin vers les artefacts |
+| `RELOAD_SECRET` | `mel-reload-secret` | Clé pour `POST /reload` |
+| `RETRAIN_SCHEDULE` | `0 2 * * 0` | Cron du retrain (dimanche 2h) |
+| `RETRAIN_ON_START` | `0` | `1` = retrain immédiat au démarrage |
+| `MYSQL_HOST` | _(vide)_ | Hôte MySQL (production) |
+| `MYSQL_PASSWORD` | _(vide)_ | Mot de passe MySQL |
+| `NOTIFY_WEBHOOK` | _(vide)_ | Webhook Slack/Discord |
+
+---
+
+## Automatisation
+
+Le système se ré-entraîne **automatiquement** chaque semaine sans intervention humaine.
+
+### Architecture
+
+```
+Container : scheduler
+  │
+  cron (RETRAIN_SCHEDULE)
+  │
+  scripts/retrain.sh
+  │
+  ├─ Étape 1 : Export données
+  │    MYSQL_HOST défini → mysql_export.py (connexion directe)
+  │    sinon             → sql_to_csv.py   (parse dump SQL)
+  │
+  ├─ Étape 2 : Entraînement
+  │    src/train.py → models/
+  │
+  └─ Étape 3 : Reload API
+       POST /reload → modèles rechargés sans redémarrage
+       Notification Slack/Discord (si NOTIFY_WEBHOOK défini)
+```
+
+### Notification après chaque retrain
+
+```
+✅ MEL Recommender — Retrain success
+   NDCG@10=0.0325 | 45 users | 9 catégories
+   Durée : 47s | 2026-10-05 02:00
+```
 
 ---
 
 ## CI/CD
 
-Pipeline GitHub Actions (`.github/workflows/ci-cd.yml`) déclenché sur chaque push vers `main` :
+Pipeline GitHub Actions (`.github/workflows/ci-cd.yml`) sur chaque push `main` :
 
 ```
 push main
-    │
-    ▼
-[1] Tests + Linting (pytest, ruff)
-    │
-    ▼
-[2] Build Docker image → push vers GHCR
-    │
-    ▼
-[3] Smoke test : /health + /popular
+  │
+  ▼
+[1] Tests (pytest 32/32) + Linting (ruff)
+  │
+  ▼
+[2] Génération modèles factices + train factice
+  │
+  ▼
+[3] Build image Docker → push GHCR
+  │
+  ▼
+[4] Smoke test : /health + /popular
 ```
+
+---
+
+## Tests
+
+```bash
+pytest tests/ -v
+# 32/32 tests passent
+```
+
+**Couverture des tests :**
+- `/health` — champs, nb articles disponibles (exclus les vendus)
+- `/metrics` — structure de la réponse
+- `/popular` — exclusion articles vendus, filtre par catégorie
+- `/recommend` — SVD / ALS / Hybrid, cold-start, articles vendus exclus
+- `/similar` — exclusion de l'article source, articles vendus exclus, 404 si inconnu
+- `/reload` — sans secret, avec bonne/mauvaise clé
 
 ---
 
@@ -361,12 +458,17 @@ Le notebook `recommendation_system.ipynb` est organisé en **14 sections** :
 
 ## Prochaines étapes
 
-- [ ] **Export MySQL → CSV** — script d'export automatique depuis la BDD MEL
-- [ ] **Cold-start amélioré** — recommandations par catégorie pour les nouveaux utilisateurs
-- [ ] **Features enrichies** — utiliser `nom`, `marque`, `description` des articles MEL
-- [ ] **A/B Testing** — mesurer l'impact réel des recommandations sur les conversions
-- [ ] **Neural CF** — embeddings appris par réseau de neurones (NCF, Two-Tower)
-- [ ] **Monitoring** — tracking des métriques en production (Prometheus/Grafana)
+- [x] **Adaptation marketplace d'occasion** — recommandation par catégorie + filtre `available`
+- [x] **Export MySQL → CSV** — `mysql_export.py` (connexion directe) + `sql_to_csv.py` (dump)
+- [x] **Retrain automatique** — cron hebdomadaire via container `scheduler` Docker
+- [x] **Rechargement zero-downtime** — endpoint `POST /reload`
+- [x] **Notifications** — webhook Slack/Discord après chaque retrain
+- [ ] **Intégration Laravel** — appel `Http::get("http://api/recommend/{user_id}")` depuis melcameroun.com
+- [ ] **Sécurité** — clé API sur tous les endpoints ou réseau privé Docker
+- [ ] **Features enrichies** — utiliser `marque` et `description` des articles pour le Content-Based
+- [ ] **A/B Testing** — mesurer l'impact des recommandations sur les conversions
+- [ ] **Monitoring** — Prometheus/Grafana pour suivre les métriques en production
+- [ ] **Neural CF** — embeddings par réseau de neurones (NCF, Two-Tower)
 
 ---
 
@@ -374,15 +476,17 @@ Le notebook `recommendation_system.ipynb` est organisé en **14 sections** :
 
 | Outil | Usage |
 |---|---|
-| Python 3.13+ | Langage principal |
+| Python 3.14+ | Langage principal |
 | pandas / numpy | Manipulation des données |
 | scipy | SVD tronqué, matrices sparse |
 | scikit-learn | Encodage, TF-IDF, métriques |
 | FastAPI | API REST |
 | uvicorn | Serveur ASGI |
-| Docker | Conteneurisation |
+| pymysql | Export direct MySQL |
+| MLflow | Tracking des expériences |
+| Docker | Conteneurisation (API + Scheduler) |
 | GitHub Actions | CI/CD |
-| pytest | Tests unitaires |
+| pytest | 32 tests unitaires |
 | matplotlib / seaborn | Visualisations |
 | Jupyter | Notebook interactif |
 

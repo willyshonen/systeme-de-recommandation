@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
@@ -10,17 +10,23 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# URL du serveur MLflow — surchargeable via docker-compose ou CLI
 ENV MLFLOW_TRACKING_URI=http://mlflow:5000
 
-CMD ["python", "src/train.py", \
-     "--data-dir", "data/raw", \
-     "--models-dir", "models", \
-     "--k-factors", "150", \
-     "--als-factors", "32", \
-     "--als-reg", "0.1", \
-     "--alpha", "1.0"]
+# Entrypoint : conversion SQL → CSV puis entraînement
+CMD ["sh", "-c", "\
+    python scripts/sql_to_csv.py \
+        --sql data/raw/mysql-mel.sql \
+        --out data/raw \
+    && python src/train.py \
+        --data-dir data/raw \
+        --models-dir models \
+        --k-factors 150 \
+        --als-factors 32 \
+        --als-reg 0.1 \
+        --alpha 1.0 \
+"]

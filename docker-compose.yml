@@ -7,7 +7,6 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # Persistance des runs et artefacts sur le host
       - ./mlflow-data/mlruns:/mlflow/mlruns
       - ./mlflow-data/artifacts:/mlflow/artifacts
     command: >
@@ -34,11 +33,15 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Monte les modèles depuis le host → permet de mettre à jour sans rebuild
+      # Monte les modèles depuis le host → mis à jour sans rebuild à chaque retrain
       - ./models:/app/models:ro
+      # Monte le catalogue produits pour le filtre disponibilité
+      - ./data/raw:/app/data/raw:ro
     environment:
       - PYTHONUNBUFFERED=1
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      # Clé secrète pour l'endpoint /reload (changer en production)
+      - RELOAD_SECRET=${RELOAD_SECRET:-mel-reload-secret}
     depends_on:
       mlflow:
         condition: service_healthy
@@ -51,14 +54,53 @@ services:
       retries: 3
       start_period: 10s
 
-  # ── Trainer (ré-entraînement du modèle) ───────────────────────────────────
+  # ── Scheduler (retrain automatique hebdomadaire) ───────────────────────────
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.scheduler
+    container_name: mel-scheduler
+    volumes:
+      # Partage data et models avec le trainer pour lire/écrire
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./mlflow-data/mlruns:/mlflow/mlruns
+      - ./mlflow-data/artifacts:/mlflow/artifacts
+    environment:
+      - DATA_DIR=data/raw
+      - MODELS_DIR=models
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - API_URL=http://api:8000
+      # Clé pour recharger l'API après retrain (doit correspondre à celle de l'API)
+      - RELOAD_SECRET=${RELOAD_SECRET:-mel-reload-secret}
+      # Planification cron (défaut: dimanche à 2h du matin)
+      # Exemples: "0 2 * * 0" = dimanche 2h | "0 3 * * *" = chaque jour 3h
+      - RETRAIN_SCHEDULE=${RETRAIN_SCHEDULE:-0 2 * * 0}
+      # Mettre à "1" pour lancer un retrain dès le démarrage du container
+      - RETRAIN_ON_START=${RETRAIN_ON_START:-0}
+      # Connexion MySQL directe (production) — laisser vide en dev
+      - MYSQL_HOST=${MYSQL_HOST:-}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      - MYSQL_DB=${MYSQL_DB:-mel_cameroun}
+      - MYSQL_USER=${MYSQL_USER:-mel_user}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-}
+      # Notification webhook Slack/Discord (optionnel)
+      - NOTIFY_WEBHOOK=${NOTIFY_WEBHOOK:-}
+    depends_on:
+      api:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Trainer ponctuel (ré-entraînement manuel) ──────────────────────────────
   trainer:
     build:
       context: .
       dockerfile: Dockerfile.train
     container_name: mel-recommender-trainer
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - ./models:/app/models
       - ./mlflow-data/mlruns:/mlflow/mlruns
       - ./mlflow-data/artifacts:/mlflow/artifacts

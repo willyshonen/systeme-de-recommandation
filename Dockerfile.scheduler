@@ -1,0 +1,30 @@
+FROM python:3.14-slim
+
+LABEL description="MEL Recommender — Scheduler (retrain automatique hebdomadaire)"
+
+WORKDIR /app
+
+# Dépendances système : cron + curl pour les notifications webhook
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cron \
+    curl \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Dépendances Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt pymysql
+
+# Code source
+COPY src/  ./src/
+COPY scripts/ ./scripts/
+COPY api/  ./api/
+
+# Script d'entrée qui installe le cron et démarre le daemon
+COPY scripts/docker-entrypoint-scheduler.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /app/scripts/retrain.sh
+
+# Pas d'utilisateur non-root ici : cron requiert root pour démarrer le daemon
+# L'isolation est assurée par le container lui-même
+
+ENTRYPOINT ["/entrypoint.sh"]
