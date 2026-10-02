@@ -13,11 +13,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Dépendances Python (couche cachée séparément)
-COPY requirements-api.txt .
-RUN pip install --no-cache-dir -r requirements-api.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Code source de l'API
 COPY api/ ./api/
+COPY src/__init__.py ./src/__init__.py
+COPY src/recommender.py ./src/recommender.py
 COPY src/train.py ./src/train.py
 
 # Le dossier models/ est monté comme volume en production

@@ -10,9 +10,13 @@ Usage :
 import argparse
 import json
 import logging
+import os
 import pickle
 import time
 from pathlib import Path
+
+import mlflow
+import mlflow.sklearn
 
 import numpy as np
 import pandas as pd
@@ -490,94 +494,145 @@ def main():
     log.info("=== Pipeline MEL Recommandation ===")
     log.info("Config : %s", vars(args))
 
-    # ── Chargement ───────────────────────────────────────────────────────────
-    data = load_data(args.data_dir)
+    # ── MLflow setup ─────────────────────────────────────────────────────────
+    # L'URI est lue depuis l'environnement (docker-compose, CI/CD, ou local)
+    # Valeur par défaut : tracking local dans ./mlruns
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
+        log.info("MLflow tracking URI : %s", tracking_uri)
+    else:
+        log.info("MLflow tracking URI : local (./mlruns)")
 
-    # ── Preprocessing ────────────────────────────────────────────────────────
-    df         = build_interactions(data)
-    df         = filter_interactions(df)
-    df, u_enc, i_enc = encode_ids(df)
+    mlflow.set_experiment("mel-recommandation")
 
-    args.processed_dir.mkdir(parents=True, exist_ok=True)
-    df.to_csv(args.processed_dir / "interactions_filtered.csv", index=False)
+    with mlflow.start_run(run_name="hybrid-svd-cb"):
 
-    train_loo, test_loo, train_rand, test_rand = make_splits(
-        df, data["orders"], random_state=args.random_state
-    )
-    train_loo.to_csv(args.processed_dir / "train.csv",        index=False)
-    test_loo.to_csv(args.processed_dir  / "test.csv",         index=False)
-    train_rand.to_csv(args.processed_dir / "train_random.csv", index=False)
-    test_rand.to_csv(args.processed_dir  / "test_random.csv",  index=False)
-
-    # ── Popularité (baseline + cold-start) ───────────────────────────────────
-    pop_counts   = train_loo.groupby("item_id")["user_id"].count().sort_values(ascending=False)
-    popular_items = pop_counts.index.tolist()
-
-    # ── SVD ──────────────────────────────────────────────────────────────────
-    R_pred, _user_mean, _R_centered = train_svd(
-        train_rand, u_enc, i_enc, k_factors=args.k_factors
-    )
-
-    # ── ALS ──────────────────────────────────────────────────────────────────
-    als_model, _, _seen_items = train_als(
-        train_loo, u_enc, i_enc,
-        n_factors=args.als_factors,
-        regularization=args.als_reg,
-        n_iterations=args.als_iter,
-        random_state=args.random_state,
-    )
-
-    # ── Content-Based ─────────────────────────────────────────────────────────
-    valid_items = df["item_id"].unique()
-    cosine_sim, item_to_idx, idx_to_item, _products_full = build_content_features(
-        data, valid_items
-    )
-
-    # ── Modèle Hybride ────────────────────────────────────────────────────────
-    hybrid_fn = build_hybrid_recommender(
-        R_pred, cosine_sim, item_to_idx, idx_to_item,
-        u_enc, i_enc, train_loo, popular_items,
-        alpha=args.alpha,
-    )
-
-    # ── Évaluation ───────────────────────────────────────────────────────────
-    log.info("Évaluation du modèle hybride (alpha=%.1f)...", args.alpha)
-    metrics = evaluate(
-        hybrid_fn, test_loo, train_loo,
-        k=args.eval_k, sample=args.eval_sample, seed=args.random_state,
-    )
-    log.info("Résultats : %s", metrics)
-
-    # ── Résumé ────────────────────────────────────────────────────────────────
-    summary = {
-        "dataset":         "MEL Cameroun",
-        "python_version":  "3.13+",
-        "n_users":         int(df["user_idx"].max()) + 1,
-        "n_items":         int(df["item_idx"].max()) + 1,
-        "n_interactions":  len(df),
-        "model":           "Hybrid (SVD + Content-Based)",
-        "hyperparameters": {
+        # Logger tous les hyperparamètres
+        mlflow.log_params({
             "svd_k_factors": args.k_factors,
             "als_n_factors": args.als_factors,
             "als_reg":       args.als_reg,
             "als_iter":      args.als_iter,
             "hybrid_alpha":  args.alpha,
-        },
-        "metrics": metrics,
-        "training_time_sec": round(time.time() - t0, 1),
-    }
+            "eval_k":        args.eval_k,
+            "eval_sample":   args.eval_sample,
+            "random_state":  args.random_state,
+        })
 
-    # ── Sauvegarde ────────────────────────────────────────────────────────────
-    save_artifacts(
-        args.models_dir,
-        R_pred, als_model, cosine_sim,
-        item_to_idx, idx_to_item,
-        u_enc, i_enc, popular_items,
-        summary,
-    )
+        # ── Chargement ───────────────────────────────────────────────────────
+        data = load_data(args.data_dir)
 
-    log.info("=== Pipeline terminée en %.1fs ===", time.time() - t0)
-    log.info("NDCG@%d = %.4f", args.eval_k, metrics[f"NDCG@{args.eval_k}"])
+        # ── Preprocessing ────────────────────────────────────────────────────
+        df         = build_interactions(data)
+        df         = filter_interactions(df)
+        df, u_enc, i_enc = encode_ids(df)
+
+        # Logger les stats du dataset
+        n_users = int(df["user_idx"].max()) + 1
+        n_items = int(df["item_idx"].max()) + 1
+        mlflow.log_params({
+            "n_users":        n_users,
+            "n_items":        n_items,
+            "n_interactions": len(df),
+        })
+
+        args.processed_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(args.processed_dir / "interactions_filtered.csv", index=False)
+
+        train_loo, test_loo, train_rand, test_rand = make_splits(
+            df, data["orders"], random_state=args.random_state
+        )
+        train_loo.to_csv(args.processed_dir / "train.csv",        index=False)
+        test_loo.to_csv(args.processed_dir  / "test.csv",         index=False)
+        train_rand.to_csv(args.processed_dir / "train_random.csv", index=False)
+        test_rand.to_csv(args.processed_dir  / "test_random.csv",  index=False)
+
+        # ── Popularité (baseline + cold-start) ───────────────────────────────
+        pop_counts   = train_loo.groupby("item_id")["user_id"].count().sort_values(ascending=False)
+        popular_items = pop_counts.index.tolist()
+
+        # ── SVD ──────────────────────────────────────────────────────────────
+        R_pred, _user_mean, _R_centered = train_svd(
+            train_rand, u_enc, i_enc, k_factors=args.k_factors
+        )
+
+        # ── ALS ──────────────────────────────────────────────────────────────
+        als_model, _, _seen_items = train_als(
+            train_loo, u_enc, i_enc,
+            n_factors=args.als_factors,
+            regularization=args.als_reg,
+            n_iterations=args.als_iter,
+            random_state=args.random_state,
+        )
+
+        # ── Content-Based ─────────────────────────────────────────────────────
+        valid_items = df["item_id"].unique()
+        cosine_sim, item_to_idx, idx_to_item, _products_full = build_content_features(
+            data, valid_items
+        )
+
+        # ── Modèle Hybride ────────────────────────────────────────────────────
+        hybrid_fn = build_hybrid_recommender(
+            R_pred, cosine_sim, item_to_idx, idx_to_item,
+            u_enc, i_enc, train_loo, popular_items,
+            alpha=args.alpha,
+        )
+
+        # ── Évaluation ───────────────────────────────────────────────────────
+        log.info("Évaluation du modèle hybride (alpha=%.1f)...", args.alpha)
+        metrics = evaluate(
+            hybrid_fn, test_loo, train_loo,
+            k=args.eval_k, sample=args.eval_sample, seed=args.random_state,
+        )
+        log.info("Résultats : %s", metrics)
+
+        # Logger les métriques dans MLflow
+        mlflow.log_metric(f"precision_at_{args.eval_k}", metrics[f"Precision@{args.eval_k}"])
+        mlflow.log_metric(f"recall_at_{args.eval_k}",    metrics[f"Recall@{args.eval_k}"])
+        mlflow.log_metric(f"ndcg_at_{args.eval_k}",      metrics[f"NDCG@{args.eval_k}"])
+        mlflow.log_metric("n_users_eval",                 metrics["n_users_eval"])
+
+        training_time = round(time.time() - t0, 1)
+        mlflow.log_metric("training_time_sec", training_time)
+
+        # ── Résumé ────────────────────────────────────────────────────────────
+        summary = {
+            "dataset":         "MEL Cameroun",
+            "python_version":  "3.13+",
+            "n_users":         n_users,
+            "n_items":         n_items,
+            "n_interactions":  len(df),
+            "model":           "Hybrid (SVD + Content-Based)",
+            "hyperparameters": {
+                "svd_k_factors": args.k_factors,
+                "als_n_factors": args.als_factors,
+                "als_reg":       args.als_reg,
+                "als_iter":      args.als_iter,
+                "hybrid_alpha":  args.alpha,
+            },
+            "metrics": metrics,
+            "training_time_sec": training_time,
+        }
+
+        # ── Sauvegarde ────────────────────────────────────────────────────────
+        save_artifacts(
+            args.models_dir,
+            R_pred, als_model, cosine_sim,
+            item_to_idx, idx_to_item,
+            u_enc, i_enc, popular_items,
+            summary,
+        )
+
+        # Logger les artefacts dans MLflow
+        mlflow.log_artifact(str(args.models_dir / "results_summary.json"))
+        mlflow.log_artifact(str(args.models_dir / "svd_R_pred.npy"))
+        mlflow.log_artifact(str(args.models_dir / "als_model.pkl"))
+        mlflow.sklearn.log_model(als_model, artifact_path="als_model")
+
+        log.info("=== Pipeline terminée en %.1fs ===", training_time)
+        log.info("NDCG@%d = %.4f", args.eval_k, metrics[f"NDCG@{args.eval_k}"])
+        log.info("MLflow run ID : %s", mlflow.active_run().info.run_id)
 
 
 if __name__ == "__main__":

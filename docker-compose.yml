@@ -1,5 +1,31 @@
 services:
 
+  # ── MLflow Tracking Server ─────────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.15.0
+    container_name: mel-mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      # Persistance des runs et artefacts sur le host
+      - ./mlflow-data/mlruns:/mlflow/mlruns
+      - ./mlflow-data/artifacts:/mlflow/artifacts
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri /mlflow/mlruns
+      --default-artifact-root /mlflow/artifacts
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── API FastAPI ────────────────────────────────────────────────────────────
   api:
     build:
       context: .
@@ -12,6 +38,10 @@ services:
       - ./models:/app/models:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      mlflow:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -21,7 +51,7 @@ services:
       retries: 3
       start_period: 10s
 
-  # Service optionnel : ré-entraînement du modèle
+  # ── Trainer (ré-entraînement du modèle) ───────────────────────────────────
   trainer:
     build:
       context: .
@@ -30,5 +60,12 @@ services:
     volumes:
       - ./data:/app/data:ro
       - ./models:/app/models
+      - ./mlflow-data/mlruns:/mlflow/mlruns
+      - ./mlflow-data/artifacts:/mlflow/artifacts
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      mlflow:
+        condition: service_healthy
     profiles:
       - train    # activé uniquement avec : docker compose --profile train up trainer

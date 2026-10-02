@@ -19,3 +19,11 @@ ipykernel>=6.29.0
 
 # Utils
 tqdm>=4.66.0
+
+# MLflow — tracking des expériences
+mlflow>=2.15.0
+
+# API
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9.0

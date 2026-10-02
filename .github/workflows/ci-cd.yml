@@ -12,7 +12,7 @@ env:
 
 jobs:
 
-  # ── 1. Tests ─────────────────────────────────────────────────────────────
+  # ── 1. Tests & Linting ────────────────────────────────────────────────────
   test:
     name: Tests & Linting
     runs-on: ubuntu-latest
@@ -28,7 +28,7 @@ jobs:
           cache: pip
 
       - name: Installer les dépendances
-        run: pip install -r requirements.txt -r requirements-api.txt pytest pytest-cov httpx
+        run: pip install -r requirements.txt pytest pytest-cov httpx
 
       - name: Linting (ruff)
         run: |
@@ -44,11 +44,85 @@ jobs:
           file: coverage.xml
         continue-on-error: true
 
-  # ── 2. Build Docker ───────────────────────────────────────────────────────
+  # ── 2. Train + MLflow tracking ────────────────────────────────────────────
+  train:
+    name: Train & Track (MLflow)
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Générer des modèles factices (données non disponibles en CI)
+        run: python scripts/generate_fake_models.py
+
+      - name: Entraîner et logger dans MLflow (tracking local)
+        env:
+          # Tracking local sur le runner — pas de serveur distant en CI
+          MLFLOW_TRACKING_URI: ""
+        run: |
+          python src/train.py \
+            --data-dir data/raw \
+            --models-dir models \
+            --k-factors 150 \
+            --als-factors 32 \
+            --als-reg 0.1 \
+            --alpha 1.0 \
+            --eval-sample 100
+        # Note : échoue gracieusement si data/raw/ est vide (pas de vraies données en CI)
+        continue-on-error: true
+
+      - name: Afficher les métriques du dernier run MLflow
+        run: |
+          python - <<'EOF'
+          import json, pathlib, sys
+
+          summary = pathlib.Path("models/results_summary.json")
+          if not summary.exists():
+              print("⚠️  Pas de résultats (données absentes en CI)")
+              sys.exit(0)
+
+          data = json.loads(summary.read_text())
+          metrics = data.get("metrics", {})
+          params  = data.get("hyperparameters", {})
+
+          print("=" * 50)
+          print("📊 Résultats d'entraînement MEL Recommender")
+          print("=" * 50)
+          for k, v in params.items():
+              print(f"  {k:25s} = {v}")
+          print("-" * 50)
+          for k, v in metrics.items():
+              print(f"  {k:25s} = {v}")
+          print("=" * 50)
+          EOF
+
+      - name: Upload artefacts MLflow (runs + résumé)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-run-${{ github.sha }}
+          path: |
+            mlruns/
+            models/results_summary.json
+          retention-days: 30
+        if: always()
+
+  # ── 3. Build Docker ───────────────────────────────────────────────────────
   build:
     name: Build Docker Image
     runs-on: ubuntu-latest
-    needs: test
+    needs: train
     if: github.ref == 'refs/heads/main'
 
     permissions:
@@ -78,8 +152,6 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Les modèles (.pkl, .npy) sont dans .gitignore → on build sans eux
-      # En production ils sont montés comme volume Docker
       - name: Build & Push (sans modèles)
         uses: docker/build-push-action@v6
         with:
@@ -91,7 +163,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max,ignore-error=true
 
-  # ── 3. Smoke test ─────────────────────────────────────────────────────────
+  # ── 4. Smoke test ─────────────────────────────────────────────────────────
   smoke-test:
     name: Smoke Test API
     runs-on: ubuntu-latest
@@ -108,7 +180,7 @@ jobs:
           python-version: "3.13"
 
       - name: Installer dépendances API
-        run: pip install -r requirements-api.txt tqdm httpx
+        run: pip install -r requirements.txt tqdm httpx
 
       - name: Générer des modèles factices
         run: python scripts/generate_fake_models.py
