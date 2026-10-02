@@ -2,7 +2,7 @@
 
 # Data manipulation
 pandas>=2.2.3
-numpy>=2.0.0
+numpy>=2.0.0,<3
 
 # ML
 scikit-learn>=1.5.0
@@ -20,8 +20,8 @@ ipykernel>=6.29.0
 # Utils
 tqdm>=4.66.0
 
-# MLflow — tracking des expériences
-mlflow==2.15.0
+# MLflow — tracking des expériences (2.17+ supporte numpy 2.x)
+mlflow>=2.17.0,<3
 
 # API
 fastapi>=0.115.0
