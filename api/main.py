@@ -96,6 +96,14 @@ store = ModelStore()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store.load()
+    log.info("━" * 55)
+    log.info("🚀  MEL Recommender API — prêt")
+    log.info("━" * 55)
+    log.info("  📡  API REST    → http://localhost:8000")
+    log.info("  📖  Swagger UI  → http://localhost:8000/docs")
+    log.info("  📘  ReDoc       → http://localhost:8000/redoc")
+    log.info("  📊  MLflow UI   → http://localhost:5000")
+    log.info("━" * 55)
     yield
 
 

@@ -21,7 +21,7 @@ ipykernel>=6.29.0
 tqdm>=4.66.0
 
 # MLflow — tracking des expériences
-mlflow>=2.15.0
+mlflow==2.15.0
 
 # API
 fastapi>=0.115.0
