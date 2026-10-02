@@ -4,7 +4,8 @@
 
 - Python 3.13+
 - pip
-- ~500 MB d'espace disque (dataset + modèles)
+- Accès à la base MySQL MEL Cameroun (pour exporter les données)
+- ~500 MB d'espace disque (données + modèles)
 
 ---
 
@@ -21,26 +22,81 @@ pip install -r requirements.txt
 
 ---
 
-## Étape 2 — Télécharger le dataset
+## Étape 2 — Exporter les données MEL depuis MySQL
 
-1. Aller sur https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
-2. Cliquer **Download** (compte Kaggle requis, gratuit)
-3. Extraire et copier ces 5 fichiers dans `data/raw/` :
+Les données doivent être exportées de la base MySQL MEL vers `data/raw/`.
+
+### Structure attendue
 
 ```
 data/raw/
-├── olist_orders_dataset.csv
-├── olist_order_items_dataset.csv
-├── olist_products_dataset.csv
-├── olist_order_reviews_dataset.csv
-└── product_category_name_translation.csv
+├── orders.csv           # Commandes (depuis table factures)
+├── order_items.csv      # Articles par commande (depuis table factures + articles)
+├── products.csv         # Catalogue articles (depuis table articles)
+├── reviews.csv          # Avis clients (depuis table etoiles)
+└── category_names.csv   # Catégories (optionnel, depuis table categories)
 ```
 
-**Alternative avec l'API Kaggle :**
-```bash
-pip install kaggle
-kaggle datasets download -d olistbr/brazilian-ecommerce -p data/raw --unzip
+### Requêtes SQL d'export
+
+**orders.csv** — depuis la table `factures` :
+```sql
+SELECT
+    f.id                AS order_id,
+    f.acheteur_id       AS customer_id,
+    f.status            AS order_status,
+    f.created_at        AS order_purchase_timestamp
+FROM factures f
+INTO OUTFILE '/path/to/data/raw/orders.csv'
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\n';
 ```
+
+**order_items.csv** — articles par commande :
+```sql
+SELECT
+    f.id                AS order_id,
+    f.article_id        AS product_id,
+    f.montant_total     AS price
+FROM factures f
+INTO OUTFILE '/path/to/data/raw/order_items.csv'
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\n';
+```
+
+**products.csv** — catalogue articles :
+```sql
+SELECT
+    a.id                        AS product_id,
+    ac.categorie_id             AS product_category_name,
+    a.nom                       AS product_name,
+    a.marque                    AS product_brand,
+    a.created_at
+FROM articles a
+LEFT JOIN article_categories ac ON ac.article_id = a.id
+INTO OUTFILE '/path/to/data/raw/products.csv'
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\n';
+```
+
+**reviews.csv** — avis / étoiles :
+```sql
+SELECT
+    e.note_id       AS order_id,
+    e.valeur        AS review_score
+FROM etoiles e
+INTO OUTFILE '/path/to/data/raw/reviews.csv'
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\n';
+```
+
+**category_names.csv** (optionnel) :
+```sql
+SELECT
+    c.id            AS product_category_name,
+    c.nom           AS product_category_name_english
+FROM categories c
+INTO OUTFILE '/path/to/data/raw/category_names.csv'
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\n';
+```
+
+> **Alternative :** utiliser phpMyAdmin (Exporter → CSV) ou un outil comme DBeaver.
 
 ---
 
@@ -123,7 +179,7 @@ def recommend_als(user_id, n=10):
 
 
 # ── Exemple ───────────────────────────────────────────────────────────────
-user_id = "8d50f5eadf50201ccdcedfb9e2ac8455"  # remplacer par un vrai ID
+user_id = "42"   # remplacer par un vrai ID utilisateur MEL
 print("SVD :", recommend_svd(user_id))
 print("ALS :", recommend_als(user_id))
 ```
@@ -134,7 +190,8 @@ print("ALS :", recommend_als(user_id))
 
 | Erreur | Cause | Solution |
 |---|---|---|
-| `FileNotFoundError: olist_orders_dataset.csv` | Dataset manquant | Télécharger et placer dans `data/raw/` |
+| `FileNotFoundError: orders.csv` | Données MEL non exportées | Exporter depuis MySQL et placer dans `data/raw/` |
 | `ValueError: y contains previously unseen labels` | User/item inconnu | Le fallback popularité est géré automatiquement |
 | `MemoryError` lors du SVD | RAM insuffisante | Réduire `k_factors` (ex: 50 au lieu de 150) |
 | `NotImplementedError` sur sparse | Version scipy incompatible | `pip install scipy>=1.14.0` |
+| Trop peu d'interactions après filtrage | Volume de données insuffisant | Abaisser `min_item` à 2 dans `filter_interactions()` |

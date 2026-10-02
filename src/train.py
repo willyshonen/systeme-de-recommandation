@@ -37,14 +37,56 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_data(data_dir: Path) -> dict:
-    """Charge les 5 fichiers CSV Olist."""
+    """
+    Charge les fichiers CSV d'interactions MEL Cameroun.
+
+    Format attendu dans data_dir/ :
+      - orders.csv      : colonnes [order_id, customer_id, order_status]
+      - order_items.csv : colonnes [order_id, product_id, price]
+      - products.csv    : colonnes [product_id, product_category_name, product_weight_g, product_photos_qty]
+      - reviews.csv     : colonnes [order_id, review_score]
+      - category_names.csv (optionnel) : colonnes [product_category_name, product_category_name_english]
+
+    Ces fichiers peuvent être exportés depuis la base MySQL MEL via :
+        SELECT * FROM factures → orders + order_items
+        SELECT * FROM articles → products
+        SELECT * FROM etoiles  → reviews
+    """
     log.info("Chargement des données depuis %s", data_dir)
+
+    def _try_read(filename: str, required: bool = True) -> pd.DataFrame | None:
+        path = data_dir / filename
+        if path.exists():
+            return pd.read_csv(path)
+        if required:
+            raise FileNotFoundError(
+                f"Fichier requis introuvable : {path}\n"
+                "Exporter les données MEL depuis MySQL vers CSV et les placer dans data/raw/"
+            )
+        return None
+
+    orders      = _try_read("orders.csv")
+    order_items = _try_read("order_items.csv")
+    products    = _try_read("products.csv")
+    reviews     = _try_read("reviews.csv")
+    cat_names   = _try_read("category_names.csv", required=False)
+
+    if cat_names is None:
+        # Fallback : pas de traduction de catégorie, on réutilise le nom brut
+        if "product_category_name" in products.columns:
+            cat_names = products[["product_category_name"]].drop_duplicates().copy()
+            cat_names["product_category_name_english"] = cat_names["product_category_name"]
+        else:
+            cat_names = pd.DataFrame(
+                columns=["product_category_name", "product_category_name_english"]
+            )
+
     return {
-        "orders":      pd.read_csv(data_dir / "olist_orders_dataset.csv"),
-        "order_items": pd.read_csv(data_dir / "olist_order_items_dataset.csv"),
-        "products":    pd.read_csv(data_dir / "olist_products_dataset.csv"),
-        "reviews":     pd.read_csv(data_dir / "olist_order_reviews_dataset.csv"),
-        "cat_names":   pd.read_csv(data_dir / "product_category_name_translation.csv"),
+        "orders":      orders,
+        "order_items": order_items,
+        "products":    products,
+        "reviews":     reviews,
+        "cat_names":   cat_names,
     }
 
 
@@ -508,7 +550,7 @@ def main():
 
     # ── Résumé ────────────────────────────────────────────────────────────────
     summary = {
-        "dataset":         "Olist Brazilian E-Commerce",
+        "dataset":         "MEL Cameroun",
         "python_version":  "3.13+",
         "n_users":         int(df["user_idx"].max()) + 1,
         "n_items":         int(df["item_idx"].max()) + 1,

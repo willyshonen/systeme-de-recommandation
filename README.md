@@ -1,14 +1,14 @@
 # 🛒 Système de Recommandation E-commerce — MEL Cameroun
 
-Projet ML/DL de recommandation de produits basé sur le dataset **Olist Brazilian E-Commerce**.  
-Conçu comme service annexe pour la plateforme [melcameroun.com](https://melcameroun.com).
+Projet ML de recommandation de produits pour la plateforme [melcameroun.com](https://melcameroun.com).  
+Expose les recommandations via une **API REST FastAPI** dans une **pipeline MLOps complète**.
 
 ---
 
 ## 📋 Table des matières
 
 - [Aperçu](#aperçu)
-- [Dataset](#dataset)
+- [Données](#données)
 - [Architecture](#architecture)
 - [Modèles implémentés](#modèles-implémentés)
 - [Résultats](#résultats)
@@ -35,23 +35,25 @@ Ce projet implémente et compare **5 modèles de recommandation** de produits, p
 | Content-Based | TF-IDF + similarité cosine sur les attributs produit |
 | **Hybride** | SVD + Content-Based pondérés (meilleur alpha automatique) |
 
-> ✅ **100% compatible Python 3.13+** — aucune dépendance Cython (pas de scikit-surprise ni implicit)
+> ✅ **100% compatible Python 3.13+** — aucune dépendance Cython
 
 ---
 
-## Dataset
+## Données
 
-**Olist Brazilian E-Commerce** — disponible sur [Kaggle](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
+Le pipeline utilise les données de la plateforme MEL Cameroun, exportées depuis la base MySQL (`factures`, `articles`, `paniers`, `categories`).
+
+**Fichiers CSV attendus dans `data/raw/` :**
 
 | Fichier | Description |
 |---|---|
-| `olist_orders_dataset.csv` | Commandes (100k+) |
-| `olist_order_items_dataset.csv` | Produits par commande |
-| `olist_products_dataset.csv` | Catalogue produits |
-| `olist_order_reviews_dataset.csv` | Avis clients (1-5 étoiles) |
-| `product_category_name_translation.csv` | Traduction catégories PT→EN |
+| `orders.csv` | Commandes (order_id, customer_id, order_status) |
+| `order_items.csv` | Produits par commande (order_id, product_id, price) |
+| `products.csv` | Catalogue produits (product_id, category, weight, photos) |
+| `reviews.csv` | Avis clients (order_id, review_score 1-5) |
+| `category_names.csv` | Traduction catégories (optionnel) |
 
-**Après filtrage cold-start :**
+**Après filtrage cold-start (validation sur données de référence) :**
 
 | Métrique | Valeur |
 |---|---|
@@ -67,7 +69,7 @@ Ce projet implémente et compare **5 modèles de recommandation** de produits, p
 ```
 mel-ml/
 ├── data/
-│   ├── raw/                        # CSV originaux Olist
+│   ├── raw/                        # Données source (CSV exportés depuis MySQL MEL)
 │   └── processed/                  # Données nettoyées, splits train/test
 ├── notebooks/
 │   └── recommendation_system.ipynb # Notebook principal (14 sections)
@@ -87,7 +89,7 @@ mel-ml/
 ├── tests/
 │   └── test_api.py                 # 15 tests unitaires
 ├── scripts/
-│   └── fix_als_pickle.py           # Migration artefacts
+│   └── generate_fake_models.py     # Génère de faux modèles pour CI
 ├── docs/
 │   ├── technical_documentation.md
 │   └── quickstart.md
@@ -105,14 +107,13 @@ mel-ml/
 ## Modèles implémentés
 
 ### 1. Baseline — Popularité
-Recommande les produits les plus achetés globalement.  
-Sert de référence minimale pour comparer les autres modèles.
+Recommande les produits les plus achetés globalement.
+Sert de référence minimale et de fallback cold-start pour les nouveaux utilisateurs.
 
 ### 2. SVD — Singular Value Decomposition
 - Matrice user-item centrée par user (rating moyen soustrait)
 - Décomposition SVD tronquée via `scipy.sparse.linalg.svds`
 - Tuning du nombre de facteurs latents : **k = 150** (optimal)
-- Évaluation RMSE/MAE sur le split aléatoire 80/20
 
 ### 3. ALS — Alternating Least Squares
 - Implémentation from scratch dans `src/recommender.py` (numpy/scipy uniquement)
@@ -130,7 +131,7 @@ Sert de référence minimale pour comparer les autres modèles.
 - Normalisation [0, 1] des scores SVD et CB par user
 - Score final : `α × score_SVD + (1−α) × score_CB`
 - Grid search sur α ∈ {0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0}
-- **Meilleur alpha = 1.0** (SVD domine sur ce dataset)
+- **Meilleur alpha = 1.0** (SVD domine — features CB à enrichir)
 
 ---
 
@@ -146,7 +147,7 @@ Sert de référence minimale pour comparer les autres modèles.
 | Content-Based (TF-IDF) | 0.0012 | 0.0120 | 0.0054 |
 | **Hybride (SVD + CB)** | **0.0038** | **0.0380** | **0.0325** |
 
-> **Note :** Les scores faibles sont normaux sur ce dataset — Olist est extrêmement sparse (~99.7%) car la plupart des clients n'achètent qu'une seule fois. L'ALS et le modèle hybride surpassent significativement la baseline (+4× en NDCG).
+> **Note :** Les scores absolus sont faibles car la matrice est très sparse (~99.7%). Ce qui compte : l'ALS et le modèle hybride surpassent la baseline de **+4× en NDCG**.
 
 ---
 
@@ -173,9 +174,19 @@ pip install -r requirements.txt
 pip install -r requirements-api.txt
 ```
 
-### 3. Télécharger le dataset
+### 3. Préparer les données
 
-Télécharge le dataset Olist depuis [Kaggle](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) et place les fichiers CSV dans `data/raw/`.
+Exporter les données de la base MySQL MEL dans `data/raw/` :
+
+```sql
+-- Exemple : exporter les commandes
+SELECT f.id AS order_id, f.acheteur_id AS customer_id, f.status AS order_status,
+       f.created_at AS order_purchase_timestamp
+FROM factures f
+INTO OUTFILE '/path/to/data/raw/orders.csv' FIELDS TERMINATED BY ',' LINES TERMINATED BY '\n';
+```
+
+Voir `docs/quickstart.md` pour le guide complet d'export.
 
 ---
 
@@ -238,15 +249,15 @@ python -m uvicorn api.main:app --reload --port 8000
 curl http://localhost:8000/health
 
 # Top 10 recommandations pour un user
-curl "http://localhost:8000/recommend/8d50f5eadf50201ccdcedfb9e2ac8455?n=10"
+curl "http://localhost:8000/recommend/USER_ID?n=10"
 
 # Choisir le modèle : svd | als | hybrid
-curl "http://localhost:8000/recommend/8d50f5eadf50201ccdcedfb9e2ac8455?model=als"
+curl "http://localhost:8000/recommend/USER_ID?model=als"
 
 # Produits similaires
-curl "http://localhost:8000/similar/b623b7cb05ee3248fbe4a6ecbeed79a4?n=5"
+curl "http://localhost:8000/similar/PRODUCT_ID?n=5"
 
-# User inconnu → cold-start (popularité automatique)
+# Nouveau client → cold-start automatique (popularité)
 curl "http://localhost:8000/recommend/nouveau_client"
 ```
 
@@ -331,7 +342,7 @@ Le notebook `recommendation_system.ipynb` est organisé en **14 sections** :
 | Section | Contenu |
 |---|---|
 | 0 | Imports & configuration |
-| 1 | Chargement des données Olist |
+| 1 | Chargement des données |
 | 2 | Exploration (EDA) |
 | 3 | Preprocessing & feature engineering |
 | 4 | Train / Test Split (Leave-One-Out + Random 80/20) |
@@ -350,8 +361,9 @@ Le notebook `recommendation_system.ipynb` est organisé en **14 sections** :
 
 ## Prochaines étapes
 
+- [ ] **Export MySQL → CSV** — script d'export automatique depuis la BDD MEL
 - [ ] **Cold-start amélioré** — recommandations par catégorie pour les nouveaux utilisateurs
-- [ ] **Données MEL Cameroun** — adapter le pipeline aux données réelles du site
+- [ ] **Features enrichies** — utiliser `nom`, `marque`, `description` des articles MEL
 - [ ] **A/B Testing** — mesurer l'impact réel des recommandations sur les conversions
 - [ ] **Neural CF** — embeddings appris par réseau de neurones (NCF, Two-Tower)
 - [ ] **Monitoring** — tracking des métriques en production (Prometheus/Grafana)

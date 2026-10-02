@@ -1,38 +1,49 @@
-# Documentation Technique — Modèles de Recommandation
+# Documentation Technique — Système de Recommandation MEL Cameroun
 
 ## 1. Pipeline de données
 
 ### 1.1 Source
-Dataset Olist Brazilian E-Commerce (Kaggle). 5 fichiers CSV joints par `order_id` et `product_id`.
+Données e-commerce MEL Cameroun. Les interactions utilisateur-produit sont construites à partir des tables MySQL de la plateforme (`factures`, `paniers`, `articles`) et exportées en CSV dans `data/raw/`.
+
+**Fichiers attendus dans `data/raw/` :**
+
+| Fichier | Colonnes clés |
+|---|---|
+| `orders.csv` | `order_id`, `customer_id`, `order_status` |
+| `order_items.csv` | `order_id`, `product_id`, `price` |
+| `products.csv` | `product_id`, `product_category_name`, `product_weight_g`, `product_photos_qty` |
+| `reviews.csv` | `order_id`, `review_score` |
+| `category_names.csv` (optionnel) | `product_category_name`, `product_category_name_english` |
 
 ### 1.2 Construction des interactions
+
 ```
 orders (order_id, customer_id, order_status)
-    ↓ join order_id
+    ↓ jointure order_id
 order_items (order_id, product_id, price)
     ↓ filtre order_status == 'delivered'
-    ↓ join order_id
+    ↓ jointure order_id
 reviews (order_id, review_score)
     → interactions (user_id, item_id, rating, order_id)
 ```
+
 - Si pas d'avis → `rating = 3.0` (signal neutre)
-- Résultat brut : **110 197 interactions**
 
 ### 1.3 Filtrage cold-start (itératif, 3 passes)
+
 | Seuil | Valeur |
 |---|---|
 | Interactions minimales par user | 2 |
 | Interactions minimales par item | 5 |
 
-Résultat après filtrage : **9 657 interactions**, 3 599 users, 882 items.
-
 ### 1.4 Splits
+
 | Split | Stratégie | Train | Test |
 |---|---|---|---|
-| Leave-One-Out | Dernier achat chronologique en test | 6 058 | 3 599 |
-| Random 80/20 | Shuffle aléatoire | 7 725 | 1 932 |
+| Leave-One-Out | Dernier achat chronologique en test | ~63% | ~37% |
+| Random 80/20 | Shuffle aléatoire | 80% | 20% |
 
-Le split LOO est utilisé pour évaluer la capacité à prédire le prochain achat.  
+Le split LOO est utilisé pour évaluer la capacité à prédire le prochain achat.
 Le split random est utilisé pour mesurer le RMSE/MAE du SVD.
 
 ---
@@ -48,7 +59,7 @@ item_popularity = train_df.groupby('item_id')['user_id'].count().sort_values(asc
 popular_items   = item_popularity.index.tolist()
 ```
 
-**Complexité :** O(I log I) une seule fois à l'entraînement, O(1) à l'inférence.  
+**Complexité :** O(I log I) une seule fois à l'entraînement, O(1) à l'inférence.
 **Usage :** fallback cold-start pour tout nouveau user.
 
 ---
@@ -64,20 +75,16 @@ popular_items   = item_popularity.index.tolist()
 4. Reconstruction : `R_pred = U · Σ · Vᵀ + user_mean`
 
 **Hyperparamètre optimal :**
+
 | Paramètre | Valeur | Sélection |
 |---|---|---|
 | `k_factors` | 150 | Grid search [20, 50, 100, 150] → max NDCG@10 |
-
-**Métriques sur test_random :**
-- RMSE : calculé sur les paires (user, item) du test split
-- MAE : calculé sur les paires (user, item) du test split
 
 **Inférence :**
 ```python
 scores   = R_pred[user_idx]          # vecteur de scores pour tous les items
 top_idxs = np.argsort(scores)[::-1]  # tri décroissant
 ```
-Complexité : O(I) par user.
 
 ---
 
@@ -104,6 +111,7 @@ y_i = A_i⁻¹ b_i
 ```
 
 **Hyperparamètres optimaux :**
+
 | Paramètre | Valeur | Sélection |
 |---|---|---|
 | `n_factors` | 32 | Grid search 5 configs → max NDCG@10 |
@@ -119,7 +127,7 @@ y_i = A_i⁻¹ b_i
 
 **Features produit :**
 ```python
-description = category_name_english + product_weight_g + "g " + product_photos_qty + "photos"
+description = category_name + product_weight_g + "g " + product_photos_qty + "photos"
 ```
 
 **Pipeline :**
@@ -133,7 +141,7 @@ for item_id in user_history:
     scores += cosine_sim[item_to_idx[item_id]]
 ```
 
-**Limites :** dépend uniquement des métadonnées produit disponibles (catégorie, poids, photos). Peu de signal discriminant sur ce dataset.
+**Note :** Performance dépendante de la richesse des métadonnées produit disponibles. Des descriptions textuelles complètes (champ `nom`, `marque`, `description` de la table `articles`) amélioreraient significativement ce modèle.
 
 ---
 
@@ -149,17 +157,14 @@ score_hybrid(u, i) = α × score_SVD_norm(u, i) + (1 − α) × score_CB_norm(u,
 score_norm = (score - score.min()) / (score.max() - score.min())
 ```
 
-**Sélection de alpha :**
-Grid search sur α ∈ {0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0} → max NDCG@10.
-
-**Résultat :** `alpha = 1.0` — le SVD domine entièrement. Le Content-Based n'apporte pas de signal supplémentaire sur ce dataset (features produits trop pauvres).
+**Sélection de alpha :** Grid search sur α ∈ {0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0} → max NDCG@10.
 
 ---
 
 ## 3. Évaluation
 
 ### 3.1 Stratégie
-**Leave-One-Out** : pour chaque user, le dernier achat (chronologique) est le ground truth.  
+**Leave-One-Out** : pour chaque user, le dernier achat (chronologique) est le ground truth.
 Les items déjà vus en train sont exclus des recommandations.
 
 Évaluation sur un échantillon de **500 users** (pour limiter le temps de calcul).
@@ -182,9 +187,8 @@ DCG@K  = Σ(i=1 à K) rel_i / log2(i+1)
 IDCG@K = DCG@K optimal (si tous les pertinents en premier)
 NDCG@K = DCG@K / IDCG@K
 ```
-Avantage : pénalise les recommandations pertinentes mais mal classées.
 
-### 3.3 Résultats
+### 3.3 Résultats (dataset de validation)
 
 | Modèle | Precision@10 | Recall@10 | NDCG@10 |
 |---|---|---|---|
@@ -194,8 +198,7 @@ Avantage : pénalise les recommandations pertinentes mais mal classées.
 | Content-Based | 0.0012 | 0.0120 | 0.0054 |
 | **Hybride** | **0.0038** | **0.0380** | **0.0325** |
 
-**Pourquoi les scores sont faibles ?**  
-La matrice user-item est sparse à **99.7%**. Sur Olist, 97% des clients n'achètent qu'une seule fois (one-shot buyers). Avec un seul achat par user, le Leave-One-Out met cet unique achat en test → le train est vide pour ces users → impossible de personnaliser. C'est un problème inhérent au dataset, pas au modèle.
+**Note sur les scores absolus :** les métriques absolues semblent faibles car la matrice user-item est extrêmement sparse (~99.7%). La plupart des utilisateurs n'achètent qu'une seule fois (one-shot buyers), ce qui est un problème inhérent aux données e-commerce. Ce qui compte : les **gains relatifs** — l'ALS et le modèle hybride surpassent la baseline de **+4× en NDCG**.
 
 ---
 
@@ -216,16 +219,16 @@ La matrice user-item est sparse à **99.7%**. Sur Olist, 97% des clients n'achè
 ## 5. Pistes d'amélioration
 
 ### Court terme
-- **Features produit plus riches** : description textuelle, images → améliorerait le Content-Based
+- **Features produit plus riches** : utiliser les champs `nom`, `marque`, `description` de la table `articles` MEL → améliorerait significativement le Content-Based
 - **Temporal weighting** : pondérer les achats récents plus fortement dans l'ALS
 - **BPR (Bayesian Personalized Ranking)** : optimise directement le ranking au lieu du RMSE
 
 ### Moyen terme
 - **Neural Collaborative Filtering (NCF)** : embeddings user/item appris par un réseau de neurones
-- **Session-based recommendations** : LSTM/Transformer sur la séquence d'achats
+- **Session-based recommendations** : LSTM/Transformer sur la séquence d'achats (paniers MEL)
 - **Two-tower model** : encodeur user + encodeur item, recherche ANN (FAISS)
 
 ### Adaptation MEL Cameroun
-- Remplacer les `customer_id` Olist par les IDs utilisateurs réels du site
-- Enrichir les features produit avec les descriptions et images du catalogue
+- Exporter les tables `factures`, `paniers`, `articles` de MySQL vers CSV pour alimenter `data/raw/`
+- Enrichir les features produit avec les descriptions et images du catalogue MEL
 - Implémenter un cold-start par catégorie : nouveaux users → popularité dans leur catégorie préférée
