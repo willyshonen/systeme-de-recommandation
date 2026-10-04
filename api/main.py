@@ -68,8 +68,11 @@ class ModelStore:
         self.cat_to_products: dict[str, list] = {}   # catégorie → [article_id disponibles]
         self.popular_products: list = []             # articles disponibles les plus populaires
         self.ready           = False
+        self._models_dir: Path = MODELS_DIR          # mémorisé au premier load()
 
     def load(self, models_dir: Path = MODELS_DIR):
+        # Mémorise le chemin pour que /reload puisse le réutiliser
+        self._models_dir = models_dir
         log.info("Chargement des modèles depuis %s", models_dir)
         try:
             with open(models_dir / "user_encoder.pkl", "rb") as f:
@@ -475,7 +478,7 @@ def reload_models(
     old_n_avail  = len(store.popular_products)
 
     try:
-        store.load()
+        store.load(store._models_dir)
     except (OSError, pickle.UnpicklingError, ValueError, RuntimeError) as e:
         log.error("Erreur au rechargement : %s", e)
         raise HTTPException(status_code=500, detail=f"Erreur rechargement : {e}")
