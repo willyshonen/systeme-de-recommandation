@@ -2,7 +2,6 @@
 Script pour injecter les cellules MEL dans le notebook recommendation_system.ipynb.
 """
 import json
-import sys
 from pathlib import Path
 
 NOTEBOOK_PATH = Path(r"C:\Users\wilfried\Documents\mel-ml\notebooks\recommendation_system.ipynb")

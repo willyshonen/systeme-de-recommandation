@@ -10,6 +10,12 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/mel-recommender-api
 
+# Moindre privilège explicite : par défaut le GITHUB_TOKEN hérite des réglages
+# du dépôt, qui varient d'un dépôt à l'autre. Chaque job élargit ce qu'il doit
+# (build → packages: write pour pousser sur GHCR, smoke-test → packages: read).
+permissions:
+  contents: read
+
 jobs:
 
   # ── 1. Tests & Linting ────────────────────────────────────────────────────
@@ -33,7 +39,28 @@ jobs:
       - name: Linting (ruff)
         run: |
           pip install ruff
-          ruff check src/ api/ tests/ --ignore E501
+          # Le périmètre couvre tout le code QUE la pipeline exécute, scripts
+          # compris : ce sont précisément les fichiers dont une erreur fait
+          # échouer train, le smoke test ou le scheduler. Les convertisseurs
+          # md→docx / sql→csv ne sont pas exécutés par la CI et gardent leurs
+          # `except Exception` best-effort (BLE001) — les lint séparément quand
+          # ils seront repris.
+          ruff check \
+            src/ api/ tests/ \
+            scripts/generate_fake_data.py \
+            scripts/generate_fake_models.py \
+            scripts/check_test_layout.py \
+            scripts/compare_metrics.py \
+            --ignore E501
+
+      - name: Vérifier qu'aucun test n'est structurellement mort
+        run: |
+          # pytest ne signale PAS un `def test_...` écrit à l'intérieur d'un
+          # autre test, ni un test dans une classe redéclarée plus bas : il ne
+          # collecte rien et la suite passe au vert en ayant perdu la
+          # couverture. C'est arrivé ici (6 tests jamais exécutés). Ce contrôle
+          # compare l'AST des fichiers de tests à ce que pytest collecte.
+          python scripts/check_test_layout.py tests/
 
       - name: Tests unitaires
         run: pytest tests/ -v --cov=api --cov=src --cov-report=xml
@@ -51,6 +78,12 @@ jobs:
     needs: test
     if: github.ref == 'refs/heads/main'
 
+    # Note : ce job ne produit PAS les modèles de production. Les modèles vivent
+    # dans le volume ./models du VPS (cf. docker-compose.yml) et sont mis à jour
+    # par le scheduler via scripts/retrain.sh. Les artefacts uploadés ici
+    # servent à la traçabilité (comparaison avant/après, MLflow), pas au
+    # déploiement — ce qui explique que `build` n'en consomme aucun.
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -64,13 +97,19 @@ jobs:
       - name: Installer les dépendances
         run: pip install -r requirements.txt
 
-      - name: Générer des modèles factices (données non disponibles en CI)
-        run: python scripts/generate_fake_models.py
+      - name: Générer un dataset synthétique (data/raw/ est gitignoré)
+        run: python scripts/generate_fake_data.py --data-dir data/raw
 
       - name: Entraîner et logger dans MLflow (tracking local)
         env:
-          # Tracking local sur le runner — pas de serveur distant en CI
+          # Tracking local SQLite sur le runner — pas de serveur distant en CI.
+          # src/train.py bascule sur SQLite si l'URI est vide ou injoignable.
           MLFLOW_TRACKING_URI: ""
+          # Le job doit être reproductible : le test d'intégration le vérifie,
+          # et un artefact différent d'un run à l'autre rendrait toute
+          # comparaison avant/après (scheduler, déploiement) ininterprétable.
+          TRAIN_ALLOW_MULTITHREAD: "0"
+          PYTHONIOENCODING: "utf-8"
         run: |
           python src/train.py \
             --data-dir data/raw \
@@ -78,10 +117,83 @@ jobs:
             --k-factors 150 \
             --als-factors 32 \
             --als-reg 0.1 \
-            --alpha 1.0 \
             --eval-sample 100
-        # Note : échoue gracieusement si data/raw/ est vide (pas de vraies données en CI)
-        continue-on-error: true
+        # Pas de continue-on-error : le step doit échouer bruyamment si le
+        # pipeline casse. Il échouait systématiquement avant (data/raw absent)
+        # et l'erreur était masquée.
+        #
+        # `--alpha` n'est PLUS passé en dur. Il vaut None par défaut et se
+        # sélectionne par validation croisée sur le LOO ; le fixer à 0.6
+        # imposait une valeur jamais justifiée par les données.
+
+      - name: Vérifier la reproductibilité (2 entraînements, artefacts identiques)
+        run: |
+          cp models/results_summary.json /tmp/run1.json
+          for f in models/*.pkl models/*.npy; do
+            sha256sum "$f"
+          done | sort > /tmp/hashes1.txt
+
+          python src/train.py \
+            --data-dir data/raw \
+            --models-dir models \
+            --k-factors 150 \
+            --als-factors 32 \
+            --als-reg 0.1 \
+            --eval-sample 100
+
+          for f in models/*.pkl models/*.npy; do
+            sha256sum "$f"
+          done | sort > /tmp/hashes2.txt
+
+          if ! diff -u /tmp/hashes1.txt /tmp/hashes2.txt; then
+            echo "::error title=Entraînement non reproductible::Deux exécutions sur les mêmes données ont produit des artefacts différents. Le scheduler compare avant/après : il ne peut pas se fier à des métriques instables."
+            exit 1
+          fi
+
+          # Le résumé ne doit varier que sur le temps d'exécution.
+          python - <<'EOF'
+          import json, pathlib, sys
+
+          def charge(p):
+              d = json.loads(pathlib.Path(p).read_text(encoding="utf-8"))
+              d.pop("training_time_sec", None)
+              return d
+
+          a, b = charge("/tmp/run1.json"), charge("models/results_summary.json")
+          if a != b:
+              clés = sorted(k for k in a if a[k] != b.get(k))
+              print(f"::error title=Résumé non reproductible::Champs différents entre deux runs : {clés}")
+              sys.exit(1)
+          print("✅ Résumé reproductible")
+          EOF
+
+      - name: Vérifier que le pipeline n'est pas en train de régresser
+        run: |
+          python - <<'EOF'
+          import json, pathlib, sys
+
+          p = pathlib.Path("models/results_summary.json")
+          if not p.exists():
+              sys.exit("Aucun results_summary.json produit — le pipeline n'a rien écrit")
+
+          d = json.loads(p.read_text())
+          m = d.get("metrics", {})
+          k = m.get("eval_k")
+
+          # Erreurs qui doivent faire échouer la CI, pas être loguées.
+          if m.get("n_users_eval", 0) == 0:
+              sys.exit(f"Aucun utilisateur évaluable (n_users_eval=0) — métriques invalides : {m}")
+          if not pathlib.Path("models/user_history.pkl").exists():
+              sys.exit("user_history.pkl absent : le score Content-Based sera désactivé en service")
+          if not pathlib.Path("models/products_catalog.csv").exists():
+              sys.exit("products_catalog.csv absent : le filtre de disponibilité cassera")
+
+          lift = d.get("ndcg_lift_vs_baseline")
+          print(f"n_users_eval = {m['n_users_eval']}, k = {k}, lift vs popularité = {lift}")
+          if lift is not None and lift < 0:
+              print(f"::warning title=Lift négatif::Le hybride ne bat pas la baseline "
+                    f"de popularité (NDCG@{k} lift={lift:+.4f})")
+          EOF
 
       - name: Afficher les métriques du dernier run MLflow
         run: |
@@ -113,8 +225,11 @@ jobs:
         with:
           name: mlflow-run-${{ github.sha }}
           path: |
+            mlflow-data/
             mlruns/
             models/results_summary.json
+            models/user_history.pkl
+            models/products_catalog.csv
           retention-days: 30
         if: always()
 
@@ -128,6 +243,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+
+    outputs:
+      # Le smoke test doit tester L'IMAGE RÉELLEMENT POUSSÉE, pas une
+      # réinstallation locale des mêmes dépendances (voir plus bas : c'était
+      # précisément le défaut qu'on corrige). Il lui faut donc le tag exact.
+      image_tag: ${{ steps.meta.outputs.version }}
 
     steps:
       - name: Checkout
@@ -170,6 +291,10 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main'
 
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -179,16 +304,56 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Installer dépendances API
-        run: pip install -r requirements.txt tqdm httpx
-
       - name: Générer des modèles factices
-        run: python scripts/generate_fake_models.py
-
-      - name: Démarrer l'API en arrière-plan
+        # Les modèles ne sont PAS dans l'image (volumele montage à l'exécution,
+        # cf. docker-compose.yml) : on les génère à part pour les monter.
         run: |
-          python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 &
-          sleep 5
+          pip install -r requirements.txt tqdm
+          python scripts/generate_fake_models.py
+          ls -1 models/
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Le point important de ce job ───────────────────────────────────────
+      # Avant, il faisait `pip install -r requirements.txt` puis lançait
+      # `python -m uvicorn` SUR LE RUNNER : il ne testait donc jamais le
+      # Dockerfile. Une image cassée (COPY manquant, dépendance absente du
+      # requirements de l'image, USER non créé, CMD erroné) passait la CI puis
+      # partait en production. Ici on lance l'image réellement poussée.
+      - name: Démarrer l'IMAGE construite (pas une réinstallation locale)
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}"
+          echo "Image testée : $IMAGE"
+          echo "$IMAGE" > /tmp/image.txt
+          docker pull "$IMAGE"
+          docker run -d --name mel-smoke -p 8000:8000 \
+            -v "$PWD/models:/app/models:ro" \
+            "$IMAGE"
+
+      - name: Attendre que l'API réponde
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "API prête après ${i}s"
+              exit 0
+            fi
+            # Si le conteneur est mort, inutile d'attendre 30 s : les logs
+            # disent tout de suite ce qui va mal (models manquants, import KO…).
+            if [ "$(docker inspect -f '{{.State.Running}}' mel-smoke)" != "true" ]; then
+              echo "::error title=Conteneur arrêté::L'image démarre puis s'arrête."
+              docker logs mel-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error title=API injoignable::/health n'a pas répondu en 30 s."
+          docker logs mel-smoke
+          exit 1
 
       - name: Test /health
         run: |
@@ -204,6 +369,44 @@ jobs:
           curl -sf 'http://localhost:8000/popular?n=5' | python3 -c "
           import sys, json
           data = json.load(sys.stdin)
-          assert len(data['popular_products']) == 5
+          assert len(data['popular_products']) == 5, data
           print('✅ /popular OK')
           "
+
+      - name: Test /events (le contrat nouveau du front)
+        run: |
+          # /events attend un LOT : {"session_id": ..., "events": [{...}]}.
+          # Un événement unique à plat renvoie 422 — c'est bien le comportement
+          # voulu (et `extra="forbid"` le rend explicite), mais le test doit
+          # refléter le contrat documenté, sinon il teste le mauvais payload.
+          curl -sf -X POST http://localhost:8000/events \
+            -H 'Content-Type: application/json' \
+            -d '{"session_id":"ci-smoke","events":[{"product_id":1,"event_type":"view"}]}' \
+            | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert data.get('accepted') == 1, data
+          assert data.get('rejected_invalid_type') == 0, data
+          print('✅ /events OK —', data['accepted'], 'événement(s) accepté(s)')
+          "
+
+      - name: Test /recommend/{user_id} lit bien les modèles montés
+        run: |
+          # Prouve que le montage /app/models fonctionne dans l'image : sans
+          # volume, la respaldo user_encoder.pkl est introuvable et l'API
+          # tombe en cold-start pour tout le monde.
+          curl -sf 'http://localhost:8000/recommend/user_0?n=3' | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert 'cold-start' not in data['model'], \
+              f\"le volume de modèles n'est pas monté : {data['model']}\"
+          print('✅ /recommend OK —', data['model'])
+          "
+
+      - name: Logs du conteneur (en cas d'échec)
+        if: failure()
+        run: docker logs mel-smoke || true
+
+      - name: Nettoyage
+        if: always()
+        run: docker rm -f mel-smoke || true

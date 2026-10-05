@@ -349,7 +349,7 @@ Voir `.env.example` pour la liste complète. Variables clés :
 
 | Variable | Défaut | Description |
 |---|---|---|
-| `RELOAD_SECRET` | `mel-reload-secret` | Clé pour `POST /reload` |
+| `RELOAD_SECRET` | _(vide)_ | Clé pour `POST /reload`. **Vide = endpoint ouvert** : à renseigner impérativement sur une machine exposée (`openssl rand -hex 32`). |
 | `RETRAIN_SCHEDULE` | `0 2 * * 0` | Cron du retrain (dimanche 2h) |
 | `RETRAIN_ON_START` | `0` | `1` = retrain immédiat au démarrage |
 | `MYSQL_HOST` | _(vide)_ | Hôte MySQL (production) |

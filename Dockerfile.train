@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
@@ -17,16 +17,35 @@ USER appuser
 
 ENV MLFLOW_TRACKING_URI=http://mlflow:5000
 
-# Entrypoint : conversion SQL → CSV puis entraînement
+# Alpha du modèle hybride. Doit rester cohérent avec le défaut de src/train.py.
+# L'API relit la valeur réellement utilisée dans results_summary.json, donc c'est
+# la valeur entraînée qui fait foi — ce paramètre sert à la surcharger.
+ARG ALPHA=0.6
+ENV ALPHA=${ALPHA}
+
+# Les données (data/raw/) sont gitignorées : elles ne sont PAS dans l'image et
+# doivent être montées en volume par docker-compose. Le dump SQL l'est encore
+# plus (données client) : on ne l'exige pas si les CSV sont déjà présents.
 CMD ["sh", "-c", "\
-    python scripts/sql_to_csv.py \
-        --sql data/raw/mysql-mel.sql \
-        --out data/raw \
-    && python src/train.py \
+    if [ ! -f data/raw/orders.csv ] || [ ! -f data/raw/order_items.csv ] || [ ! -f data/raw/products.csv ]; then \
+        echo 'ERROR: CSV introuvables dans data/raw/. Montez le volume ./data:/app/data'; \
+        echo '       ou fournissez data/raw/mysql-mel.sql pour la conversion SQL -> CSV.'; \
+        exit 1; \
+    fi \
+&& if [ -f data/raw/mysql-mel.sql ]; then \
+        echo '>>> Conversion SQL -> CSV depuis data/raw/mysql-mel.sql'; \
+        python scripts/sql_to_csv.py \
+            --sql data/raw/mysql-mel.sql \
+            --out data/raw \
+    || exit 1; \
+    else \
+        echo '>>> Dump SQL absent — entrainement sur les CSV existants'; \
+    fi \
+&& python src/train.py \
         --data-dir data/raw \
         --models-dir models \
         --k-factors 150 \
         --als-factors 32 \
         --als-reg 0.1 \
-        --alpha 1.0 \
+        --alpha \"$ALPHA\" \
 "]

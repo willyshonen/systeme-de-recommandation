@@ -1,0 +1,47 @@
+# Contexte de build Docker — n'envoyer que le nécessaire.
+#
+# Sans ce fichier, Docker envoie tout le dépôt au builder à chaque build :
+# 9,3 Mo / 310 fichiers, dont .git (7,4 Mo, l'historique complet), mlruns/
+# (139 fichiers), mlflow-data/ et data/raw/ (5,1 Mo de données client).
+# Aucun n'entre dans l'image (les Dockerfile ne copient que requirements.txt,
+# api/ et src/), mais tout est uploadé, et l'historique git part avec.
+
+.git/
+.github/
+.gitignore
+.dockerignore
+
+# Données client : jamais dans une image.
+data/
+models/
+mlruns/
+mlflow-data/
+
+# Ni-trained, ni-tests, ni-outils : hors image.
+tests/
+notebooks/
+scripts/
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Artefacts de build et rapports
+build/
+dist/
+htmlcov/
+coverage.xml
+.coverage
+*.log
+train_output.txt
+
+# Système
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

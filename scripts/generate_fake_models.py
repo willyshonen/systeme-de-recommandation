@@ -23,6 +23,11 @@ sys.path.insert(0, str(ROOT))
 
 from src.recommender import ALSRecommender
 
+# Sorties emoji + console Windows cp1252 : sans ce repli, print("✓") lève
+# UnicodeEncodeError et le script termine en code 1 alors que tout a été écrit.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 MODELS_DIR = ROOT / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 

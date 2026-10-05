@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.13-slim
 
 # Métadonnées
 LABEL maintainer="MEL Cameroun"
@@ -20,6 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY api/ ./api/
 COPY src/__init__.py ./src/__init__.py
 COPY src/recommender.py ./src/recommender.py
+# events.py est requis par api/main.py (POST /events) : sans cette copie,
+# l'API ne démarre pas en conteneur alors que les tests passent en local.
+COPY src/events.py ./src/events.py
 COPY src/train.py ./src/train.py
 
 # Le dossier models/ est monté comme volume en production

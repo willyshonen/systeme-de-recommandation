@@ -5,17 +5,25 @@ services:
     image: ghcr.io/mlflow/mlflow:v2.15.0
     container_name: mel-mlflow
     ports:
-      - "5000:5000"
+      # Bindé sur localhost : l'UI MLflow n'a rien à faire sur l'Internet public.
+      - "127.0.0.1:5000:5000"
     volumes:
-      - ./mlflow-data/mlruns:/mlflow/mlruns
-      - ./mlflow-data/artifacts:/mlflow/artifacts
+      - ./mlflow-data:/mlflow/data
     command: >
       mlflow server
       --host 0.0.0.0
       --port 5000
-      --backend-store-uri /mlflow/mlruns
-      --default-artifact-root /mlflow/artifacts
+      --backend-store-uri sqlite:////mlflow/data/mlflow.db
+      --default-artifact-root /mlflow/data/artifacts
     restart: unless-stopped
+    # Sans plafond, le json-file grossit jusqu'à remplir le disque du VPS et
+    # emporte data/ et models/ avec lui. 'max-size' est la seule protection.
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
@@ -31,21 +39,37 @@ services:
       dockerfile: Dockerfile
     container_name: mel-recommender-api
     ports:
-      - "8000:8000"
+      # 127.0.0.1 par défaut : melcameroun doit passer par un reverse proxy qui
+      # termine le TLS, pas consommer un port HTTP nu sur l'Internet. Mettre
+      # API_BIND=0.0.0.0 pour exposer directement (déconseillé en production).
+      - "${API_BIND:-127.0.0.1}:8000:8000"
     volumes:
       # Monte les modèles depuis le host → mis à jour sans rebuild à chaque retrain
       - ./models:/app/models:ro
-      # Monte le catalogue produits pour le filtre disponibilité
-      - ./data/raw:/app/data/raw:ro
+      # events.csv doit être ÉCRIT par l'API (POST /events) et lu par le
+      # trainer au retrain. `:ro` ici faisait échouer toute collecte en
+      # production : le reste du répertoire reste en lecture seule côté API,
+      # seul le fichier de collecte a besoin d'un accès en écriture.
+      - ./data/raw:/app/data/raw
     environment:
       - PYTHONUNBUFFERED=1
-      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      # Chemin de collecte : doit pointer sur le volume ci-dessus.
+      - DATA_DIR=/app/data/raw
       # Clé secrète pour l'endpoint /reload (changer en production)
-      - RELOAD_SECRET=${RELOAD_SECRET:-mel-reload-secret}
-    depends_on:
-      mlflow:
-        condition: service_healthy
+      - RELOAD_SECRET=${RELOAD_SECRET:-}
+      # Origines front autorisées (défaut : melcameroun.com + localhost)
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+    # Pas de depends_on sur mlflow : l'API ne lit que des fichiers pickles/npy
+    # locaux. La dépendance rendait l'API indisponible dès que MLflow tombait.
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        # L'API ne fait que lire des tableaux numpy : 1 Go suffit largement.
+        # Le plafond évite qu'un pic de requêtes tue le VPS.
+        limits: { cpus: "1.0", memory: 1G }
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -64,15 +88,15 @@ services:
       # Partage data et models avec le trainer pour lire/écrire
       - ./data:/app/data
       - ./models:/app/models
-      - ./mlflow-data/mlruns:/mlflow/mlruns
-      - ./mlflow-data/artifacts:/mlflow/artifacts
     environment:
       - DATA_DIR=data/raw
       - MODELS_DIR=models
-      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      # MLflow est optionnel : src/train.py bascule sur une base SQLite locale
+      # si le serveur est injoignable. Mettre vide pour travailler sans MLflow.
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       - API_URL=http://api:8000
       # Clé pour recharger l'API après retrain (doit correspondre à celle de l'API)
-      - RELOAD_SECRET=${RELOAD_SECRET:-mel-reload-secret}
+      - RELOAD_SECRET=${RELOAD_SECRET:-}
       # Planification cron (défaut: dimanche à 2h du matin)
       # Exemples: "0 2 * * 0" = dimanche 2h | "0 3 * * *" = chaque jour 3h
       - RETRAIN_SCHEDULE=${RETRAIN_SCHEDULE:-0 2 * * 0}
@@ -86,12 +110,25 @@ services:
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-}
       # Notification webhook Slack/Discord (optionnel)
       - NOTIFY_WEBHOOK=${NOTIFY_WEBHOOK:-}
-    depends_on:
-      api:
-        condition: service_healthy
-      mlflow:
-        condition: service_healthy
+      # Politique de l'espace des catégories. 'interactions' = seules les
+      # catégories observées chez les utilisateurs (défaut, recommandé).
+      # 'catalog' ajoute les catégories du catalogue avec du stock, classées par
+      # similarité de nom seule : +43 articles joignables, mais sur le jeu réel
+      # 44 % des premiers résultats tombaient sur des catégories jamais vues.
+      - ITEM_SPACE=${ITEM_SPACE:-interactions}
+    # Le scheduler n'a pas besoin que l'API soit déjà saine : il ré-entraîne selon
+    # son cron et le /reload final est best-effort ( logged warning si l'API est
+    # momentanément indisponible). dependre de api: service_healthy faisait
+    # saute silencieusement les réentraînements quand l'API était en panne.
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        # L'entraînement est le seul poste réellement gourmand : ALS + SVD sur
+        # plusieurs JVM lors d'un pic. 4 Go évitent un OOM-kill du VPS.
+        limits: { cpus: "2.0", memory: 4G }
 
   # ── Trainer ponctuel (ré-entraînement manuel) ──────────────────────────────
   trainer:
@@ -102,12 +139,16 @@ services:
     volumes:
       - ./data:/app/data
       - ./models:/app/models
-      - ./mlflow-data/mlruns:/mlflow/mlruns
-      - ./mlflow-data/artifacts:/mlflow/artifacts
     environment:
-      - MLFLOW_TRACKING_URI=http://mlflow:5000
-    depends_on:
-      mlflow:
-        condition: service_healthy
+      # MLflow optionnel : repli SQLite local si le serveur est injoignable
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      - ALPHA=${ALPHA:-0.6}
+      - ITEM_SPACE=${ITEM_SPACE:-interactions}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 4G }
     profiles:
       - train    # activé uniquement avec : docker compose --profile train up trainer

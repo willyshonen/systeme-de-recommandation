@@ -1,4 +1,5 @@
-# ── Compatible Python 3.13+ ──────────────────────────────────────────────────
+# ── Compatible Python 3.13 ───────────────────────────────────────────────────
+# Note : utiliser python:3.13-slim dans Docker (pyarrow n'a pas de wheel Python 3.14)
 
 # Data manipulation
 pandas>=2.2.3
@@ -20,8 +21,8 @@ ipykernel>=6.29.0
 # Utils
 tqdm>=4.66.0
 
-# MLflow — tracking des expériences (2.17+ supporte numpy 2.x)
-mlflow>=2.17.0,<3
+# MLflow — tracking des expériences
+mlflow>=2.17.0
 
 # API
 fastapi>=0.115.0

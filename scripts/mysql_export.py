@@ -165,7 +165,6 @@ def export_products(conn, out_dir: Path):
     Export articles + categories + article_categories → products.csv
     Inclut product_name, product_category_name, available.
     """
-    import pandas as pd
 
     log.info("Export articles...")
 

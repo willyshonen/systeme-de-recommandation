@@ -28,9 +28,9 @@ data/processed/
 models/*.npy
 models/*.pkl
 
-# Garder le résumé JSON et les graphiques
+# Garder le résumé JSON : c'est l'artefact de référence que la CI compare
+# avant/après et que /metrics expose.
 !models/results_summary.json
-!models/*.png
 
 # IDE
 .vscode/
@@ -42,8 +42,13 @@ models/*.pkl
 coverage.xml
 htmlcov/
 
-# Docker
-.dockerignore
+# Tracking MLflow local (SQLite + runs)
+mlflow-data/
+mlruns/
+
+# Logs d'exécution
+train_output.txt
+*.log
 
 # OS
 .DS_Store

@@ -1,39 +1,123 @@
 {
   "dataset": "MEL Cameroun",
   "python_version": "3.13+",
-  "n_users": 3599,
-  "n_items": 882,
-  "n_interactions": 9657,
-  "K": 10,
-  "best_svd_k_factors": 150,
-  "best_als_n_factors": 32,
-  "best_als_reg": 0.1,
-  "best_hybrid_alpha": 1.0,
-  "results": {
-    "Baseline (Popularit\u00e9)": {
-      "Precision@10": 0.0015,
-      "Recall@10": 0.0147,
-      "NDCG@10": 0.0077
+  "n_users": 34,
+  "n_items": 7,
+  "n_interactions": 51,
+  "n_available_products": 191,
+  "item_space": {
+    "mode": "interactions",
+    "n_items_total": 7,
+    "n_items_from_interactions": 7,
+    "n_items_added_from_catalog": 0,
+    "n_unreachable_categories": 9,
+    "unreachable_categories": [
+      "Chaussures enfants",
+      "Chaussures femmes",
+      "Ensembles enfants",
+      "Mobiliers",
+      "Ordinateurs",
+      "Sacs",
+      "Ustensiles de cuisine",
+      "V\u00eatements enfants",
+      "\u00c9quipements technologiques"
+    ],
+    "categories_without_stock": [
+      "T\u00e9l\u00e9visions"
+    ]
+  },
+  "product_layer": {
+    "n_events": 113,
+    "n_events_identified": 113,
+    "n_events_session_only": 0,
+    "n_users_identified": 34,
+    "n_products": 60,
+    "n_user_product_pairs": 110,
+    "events_by_type": {
+      "cart": 82,
+      "purchase": 30,
+      "review": 1
     },
-    "SVD (scipy)": {
-      "Precision@10": 0.0032,
-      "Recall@10": 0.032,
-      "NDCG@10": 0.024
+    "cf_thresholds": {
+      "min_events": 500,
+      "min_users": 100,
+      "min_pairs": 1000
     },
-    "ALS (from scratch)": {
-      "Precision@10": 0.0038,
-      "Recall@10": 0.038,
-      "NDCG@10": 0.0298
-    },
-    "Content-Based (TF-IDF)": {
-      "Precision@10": 0.0012,
-      "Recall@10": 0.012,
-      "NDCG@10": 0.0054
-    },
-    "Hybride (SVD + CB)": {
-      "Precision@10": 0.0038,
-      "Recall@10": 0.038,
-      "NDCG@10": 0.0325
+    "collaborative_ready": false,
+    "collaborative_verdict": "insuffisant \u2014 113/500 \u00e9v\u00e9nements identifi\u00e9s, 34/100 clients identifi\u00e9s, 110/1000 couples (client, article)",
+    "content_based_ready": true,
+    "n_products_with_price": 30,
+    "n_products_with_rating": 1,
+    "catalogue_coverage_pct": 27.1
+  },
+  "model": "Hybrid (SVD + Content-Based)",
+  "trained_on": "df complet (toutes les interactions)",
+  "evaluated_on": "LOO (le SVD de l'\u00e9valuation est r\u00e9entra\u00een\u00e9 sur train_loo)",
+  "hyperparameters": {
+    "svd_k_factors": 150,
+    "svd_k_factors_effective": 6,
+    "als_n_factors": 32,
+    "als_reg": 0.1,
+    "als_iter": 15,
+    "hybrid_alpha": 0.8,
+    "alpha_selection": "validation crois\u00e9e LOO",
+    "alpha_cv": {
+      "k_eval": 3,
+      "n_folds": 3,
+      "grid": [
+        0.0,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1.0
+      ],
+      "ndcg_mean_per_alpha": {
+        "0.0": 0.9498,
+        "0.2": 0.9498,
+        "0.4": 0.9498,
+        "0.6": 0.9498,
+        "0.8": 0.9498,
+        "1.0": 0.8356
+      },
+      "baseline_ndcg_mean": 1.0,
+      "lift_at_k": -0.0502
     }
-  }
+  },
+  "metrics": {
+    "Precision@7": 0.1429,
+    "Recall@7": 1.0,
+    "NDCG@7": 0.9736,
+    "n_users_eval": 14,
+    "eval_k": 7,
+    "n_distinct_pairs": 5
+  },
+  "metrics_baseline_popularity": {
+    "Precision@7": 0.1429,
+    "Recall@7": 1.0,
+    "NDCG@7": 0.8946,
+    "n_users_eval": 14,
+    "eval_k": 7,
+    "n_distinct_pairs": 5
+  },
+  "metrics_at_k3": {
+    "Precision@3": 0.3333,
+    "Recall@3": 1.0,
+    "NDCG@3": 0.9736,
+    "n_users_eval": 14,
+    "eval_k": 3,
+    "n_distinct_pairs": 5
+  },
+  "metrics_baseline_at_k3": {
+    "Precision@3": 0.3333,
+    "Recall@3": 1.0,
+    "NDCG@3": 0.8946,
+    "n_users_eval": 14,
+    "eval_k": 3,
+    "n_distinct_pairs": 5
+  },
+  "ndcg_lift_vs_baseline": 0.079,
+  "ndcg_lift_at_k3": 0.079,
+  "metrics_caveat": "Jeux de donn\u00e9es minuscule et d\u00e9g\u00e9n\u00e9r\u00e9 : 14 users \u00e9valuables, 5 paires distinctes, 7 cat\u00e9gories. M\u00e9triques non significatives.",
+  "training_time_sec": 2.1
 }

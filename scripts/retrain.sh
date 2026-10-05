@@ -49,7 +49,7 @@ log() {
 
 # Notifie via webhook Slack ou Discord si NOTIFY_WEBHOOK est défini
 notify() {
-    STATUS="$1"   # success | failure
+    STATUS="$1"   # success | warning | failure
     MESSAGE="$2"
     ELAPSED="$3"
 
@@ -57,13 +57,15 @@ notify() {
         return 0
     fi
 
-    if [ "$STATUS" = "success" ]; then
-        EMOJI="✅"
-        COLOR="good"
-    else
-        EMOJI="❌"
-        COLOR="danger"
-    fi
+    case "$STATUS" in
+        success)
+            EMOJI="✅"; COLOR="good" ;;
+        warning)
+            # Déploiement réussi mais métrique en baisse : ni succès ni échec.
+            EMOJI="⚠️"; COLOR="warning" ;;
+        *)
+            EMOJI="❌"; COLOR="danger" ;;
+    esac
 
     PAYLOAD=$(cat <<EOF
 {
@@ -173,13 +175,36 @@ fi
 # ── Étape 2 : Entraînement ─────────────────────────────────────────────────────
 log "🤖  Étape 2/3 : Entraînement du modèle..."
 
+# Mémorise les métriques AVANT entraînement pour pouvoir détecter une
+# régression ensuite. La politique de déploiement reste « toujours déployer »
+# (choix explicite) : on n'empêche pas la mise en production, on alerte.
+PREV_SUMMARY="/tmp/metrics_before.json"
+if [ -f "$MODELS_DIR/results_summary.json" ] && command -v python3 > /dev/null 2>&1; then
+    cp "$MODELS_DIR/results_summary.json" "$PREV_SUMMARY" 2>/dev/null || true
+    log "    Métriques précédentes sauvegardées pour comparaison"
+fi
+
+# Alpha par défaut aligné sur src/train.py (source de vérité). Surchargeable
+# via la variable d'environnement ALPHA.
+ALPHA="${ALPHA:-0.6}"
+
+# Politique de l'espace des items verrouillée sur 'interactions' : seules les
+# catégories observées chez les utilisateurs entrent dans le modèle. Le mode
+# 'catalog' ajoute les catégories du catalogue, classées par similarité de nom
+# seule — sur le jeu réel cela pushing 44 % des premiers résultats sur des
+# catégories jamais vues. Ne pas le passer ici sans décision explicite :
+# ITEM_SPACE=catalog scripts/retrain.sh
+ITEM_SPACE="${ITEM_SPACE:-interactions}"
+log "    Espace des items : $ITEM_SPACE"
+
 python src/train.py \
     --data-dir    "$DATA_DIR" \
     --models-dir  "$MODELS_DIR" \
     --k-factors   150 \
     --als-factors 32 \
     --als-reg     0.1 \
-    --alpha       1.0
+    --alpha       "$ALPHA" \
+    --item-space  "$ITEM_SPACE"
 
 if [ $? -ne 0 ]; then
     log "❌  Erreur lors de l'entraînement"
@@ -197,9 +222,18 @@ try:
     with open('$MODELS_DIR/results_summary.json') as f:
         d = json.load(f)
     m = d.get('metrics', {})
-    print(f'   Precision@10 = {m.get(\"Precision@10\", \"?\")}')
-    print(f'   Recall@10    = {m.get(\"Recall@10\", \"?\")}')
-    print(f'   NDCG@10      = {m.get(\"NDCG@10\", \"?\")}')
+    # Les clés dépendent du k effectif (plafonné au nombre de catégories), pas
+    # d'un @10 en dur : sans ça on affiche '?' depuis le plafonnement.
+    k = m.get('eval_k', '?')
+    base = d.get('metrics_baseline_popularity', {})
+    lift = d.get('ndcg_lift_vs_baseline', '?')
+    print(f'   Precision@{k} = {m.get(f\"Precision@{k}\", \"?\")}')
+    print(f'   Recall@{k}    = {m.get(f\"Recall@{k}\", \"?\")}')
+    print(f'   NDCG@{k}      = {m.get(f\"NDCG@{k}\", \"?\")}')
+    print(f'   NDCG@{k} (baseline popularité) = {base.get(f\"NDCG@{k}\", \"?\")}  lift = {lift}')
+    if d.get('metrics_caveat'):
+        print(f'   ⚠️  {d[\"metrics_caveat\"]}')
+    print(f'   Users évalués = {m.get(\"n_users_eval\", \"?\")} | paires distinctes = {m.get(\"n_distinct_pairs\", \"?\")}')
     print(f'   Users        = {d.get(\"n_users\", \"?\")}')
     print(f'   Catégories   = {d.get(\"n_items\", \"?\")}')
 except Exception as e:
@@ -209,6 +243,24 @@ fi
 
 # ── Étape 3 : Rechargement de l'API ───────────────────────────────────────────
 log "🔄  Étape 3/3 : Rechargement de l'API..."
+
+# Détection de régression AVANT le reload. Politique choisie : on déploie
+# quand même (le modèle neuf a Learned sur des données plus récentes), mais on
+# alerte pour qu'un humain regarde.
+DEGRADED="false"
+REGRESSION_MSG=""
+if [ -f "$PREV_SUMMARY" ] && [ -f "$MODELS_DIR/results_summary.json" ] \
+   && command -v python3 > /dev/null 2>&1; then
+    REGRESSION_MSG=$(python3 scripts/compare_metrics.py \
+        "$PREV_SUMMARY" "$MODELS_DIR/results_summary.json" 2>/dev/null || echo "")
+
+    if [ -n "$REGRESSION_MSG" ]; then
+        DEGRADED="true"
+        log "⚠️  RÉGRESSION DÉTECTÉE : $REGRESSION_MSG"
+        log "    Le modèle neuf est malgré tout déployé (politique : toujours déployer)."
+    fi
+fi
+
 reload_api
 
 # ── Fin ────────────────────────────────────────────────────────────────────────
@@ -220,7 +272,9 @@ log "✅  Pipeline terminé en ${ELAPSED}s"
 log "    Modèles disponibles dans : $MODELS_DIR"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Lecture métriques pour la notification
+# Lecture métriques pour la notification. La clé NDCG dépend de eval_k, qui est
+# plafonné au nombre de catégories : 'NDCG@10' n'existe pas sur le jeu réel
+# (7 catégories), la notification affichait '?'.
 METRICS_MSG="Pipeline OK"
 if [ -f "$MODELS_DIR/results_summary.json" ] && command -v python3 > /dev/null 2>&1; then
     METRICS_MSG=$(python3 -c "
@@ -229,12 +283,19 @@ try:
     with open('$MODELS_DIR/results_summary.json') as f:
         d = json.load(f)
     m = d.get('metrics', {})
-    print(f'NDCG@10={m.get(\"NDCG@10\",\"?\")} | {d.get(\"n_users\",\"?\")} users | {d.get(\"n_items\",\"?\")} catégories')
+    k = m.get('eval_k', '?')
+    print(f'NDCG@{k}={m.get(f\"NDCG@{k}\", \"?\")} | {d.get(\"n_users\",\"?\")} users | {d.get(\"n_items\",\"?\")} catégories')
 except Exception:
     print('Pipeline OK')
 " 2>/dev/null || echo "Pipeline OK")
 fi
 
-notify "success" "$METRICS_MSG" "$ELAPSED"
+# Une régression donne une notification "warning" (jaune) malgré le succès du
+# pipeline : le modèle est déployé, mais quelqu'un doit regarder.
+if [ "$DEGRADED" = "true" ]; then
+    notify "warning" "RÉGRESSION NDCG — $REGRESSION_MSG | $METRICS_MSG" "$ELAPSED"
+else
+    notify "success" "$METRICS_MSG" "$ELAPSED"
+fi
 
 exit 0
