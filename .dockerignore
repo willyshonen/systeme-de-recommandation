@@ -3,8 +3,15 @@
 # Sans ce fichier, Docker envoie tout le dépôt au builder à chaque build :
 # 9,3 Mo / 310 fichiers, dont .git (7,4 Mo, l'historique complet), mlruns/
 # (139 fichiers), mlflow-data/ et data/raw/ (5,1 Mo de données client).
-# Aucun n'entre dans l'image (les Dockerfile ne copient que requirements.txt,
-# api/ et src/), mais tout est uploadé, et l'historique git part avec.
+# Tout est uploadé même si peu entre dans l'image.
+#
+# ⚠ Les Dockerfile ne copient PAS tous les mêmes sources :
+#   - Dockerfile            : requirements.txt, api/, src/  (modèles montés en volume)
+#   - Dockerfile.ci         : requirements.txt, api/, src/
+#   - Dockerfile.train      : requirements.txt, src/, scripts/
+#   - Dockerfile.scheduler  : requirements.txt, api/, src/, scripts/
+# Un dossier copié par un Dockerfile ne doit donc JAMAIS être listé ici :
+# `scripts/` est requis par train et scheduler, il reste inclus.
 
 .git/
 .github/
@@ -12,15 +19,17 @@
 .dockerignore
 
 # Données client : jamais dans une image.
+# `models/` reste exclu : les artefacts (dont products_catalog.csv, catalogue
+# client) sont montés en volume en production, pas embarqués dans l'image.
 data/
 models/
 mlruns/
 mlflow-data/
 
-# Ni-trained, ni-tests, ni-outils : hors image.
+# Hors image : ni tests, ni notebook, ni documentation.
+# (scripts/ est CONSERVÉ : requis par Dockerfile.train et Dockerfile.scheduler.)
 tests/
 notebooks/
-scripts/
 docs/
 
 # Python

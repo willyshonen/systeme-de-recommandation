@@ -25,9 +25,10 @@ COPY src/recommender.py ./src/recommender.py
 COPY src/events.py ./src/events.py
 COPY src/train.py ./src/train.py
 
-# Le dossier models/ est monté comme volume en production
-# En dev, on copie les modèles pré-entraînés
-COPY models/ ./models/
+# Les modèles ne sont PAS copiés dans l'image : ils contiennent le catalogue
+# client (products_catalog.csv) et sont montés en volume en production
+# (docker-compose.yml : ./models:/app/models:ro). `models/` est exclu du
+# contexte par .dockerignore, donc un `COPY models/` échouerait ici.
 
 # Utilisateur non-root pour la sécurité
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
