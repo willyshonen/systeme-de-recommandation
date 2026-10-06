@@ -1117,7 +1117,7 @@ def collect_events(payload: EventBatch):
     invalid_type = 0
     details: list[str] = []
 
-    now = pd.Timestamp.utcnow().isoformat()
+    now = pd.Timestamp.now("UTC").isoformat()
     for ev in payload.events:
         if ev.event_type not in EVENT_TYPES:
             invalid_type += 1

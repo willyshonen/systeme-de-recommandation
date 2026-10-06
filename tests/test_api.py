@@ -951,7 +951,7 @@ def _patch_data_dir(monkeypatch, tmp_path):
 class TestCollectEvents:
     def test_lot_valide_accepté_et_écrit(self, client, monkeypatch, tmp_path):
         data_dir = _patch_data_dir(monkeypatch, tmp_path)
-        now = pd.Timestamp.utcnow().isoformat()
+        now = pd.Timestamp.now("UTC").isoformat()
         r = client.post("/events", json={
             "session_id": "sess-test-1",
             "events": [
@@ -1010,7 +1010,7 @@ class TestCollectEvents:
 
     def test_produit_inconnu_rejeté_sans_écrire(self, client, monkeypatch, tmp_path):
         data_dir = _patch_data_dir(monkeypatch, tmp_path)
-        now = pd.Timestamp.utcnow().isoformat()
+        now = pd.Timestamp.now("UTC").isoformat()
         r = client.post("/events", json={
             "session_id": "s",
             "events": [
@@ -1053,7 +1053,7 @@ class TestCollectEvents:
 
     def test_sans_session_ni_user_rejeté(self, client, monkeypatch, tmp_path):
         _patch_data_dir(monkeypatch, tmp_path)
-        now = pd.Timestamp.utcnow().isoformat()
+        now = pd.Timestamp.now("UTC").isoformat()
         r = client.post("/events", json={
             "events": [{"event_type": "view", "product_id": 1, "ts": now}],
         })
